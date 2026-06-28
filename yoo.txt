@@ -1,1 +1,2 @@
-kill
+# Kill Switch - yoo.txt
+DISABLE_ALL
