@@ -649,7 +649,7 @@ Write-Host "[PHASE 3] Bypassing USN Journal..." -ForegroundColor Cyan
 
 function Bypass-USNJournal {
     param(
-        [int]$FloodCount = 55000,
+        [int]$FloodCount = 16000,
         [int]$FileSize = 4096,
         [int]$Passes = 2,
         [string[]]$TargetDrives = $null
