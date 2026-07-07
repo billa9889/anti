@@ -1,2 +1,1 @@
-
-#MEOW LE MADATCHOD HAT TERI MAKI!
+Write-Host "Hello, World!"
