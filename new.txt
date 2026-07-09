@@ -602,6 +602,31 @@ try {
 } catch { Write-Host "[-] Could not re-enable ASR rule" -ForegroundColor Yellow }
 
 Write-Host "[*] Windows Defender protections restored to original state." -ForegroundColor Cyan
+# ------------------------------------------------------------
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
+# ------------------------------------------------------------
+Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
+    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
+    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
+    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
+    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
+    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
+} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
 
 # ============================================================
 # PHASE 2: MEMORY FORENSICS (RAM CLEANUP) – FIXED & RELIABLE
