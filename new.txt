@@ -763,6 +763,20 @@ $myDrives      = @("C")   # Only target C: drive (adjust if needed)
 
 Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives
 
+# ========== CLEAN UP USN FLOOD FILES ==========
+Write-Host "[*] Removing temporary USN journal flood files..." -ForegroundColor Cyan
+foreach ($drive in $myDrives) {
+    $pattern = "$drive`:\$JOURNAL_FLUSH_*.tmp"
+    $files = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue
+    if ($files) {
+        $count = ($files | Measure-Object).Count
+        Remove-Item -Path $pattern -Force -ErrorAction SilentlyContinue
+        Write-Host "[+] Removed $count files from $drive`:" -ForegroundColor Green
+    } else {
+        Write-Host "[+] No flood files found on $drive`:" -ForegroundColor Yellow
+    }
+}
+
 # ========== FINAL CLEANUP ==========
 Write-Host "[*] Performing final cleanup..." -ForegroundColor Cyan
 
