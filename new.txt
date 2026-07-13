@@ -545,88 +545,6 @@ Write-Host "Optimization complete." -ForegroundColor Green
 Set-Content -Path $historyPath -Value $optimizerScript -Encoding UTF8
 Write-Host "[*] PowerShell history overwritten with PC Optimizer script." -ForegroundColor Green
 
-# ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
-# ------------------------------------------------------------
-Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
-    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
-    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
-    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
-    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
-    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
-} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
-
-# ------------------------------------------------------------
-# RE-ENABLE WINDOWS DEFENDER PROTECTIONS (original step 10)
-# ------------------------------------------------------------
-Write-Host "[*] Re-enabling Windows Defender protections..." -ForegroundColor Cyan
-
-try {
-    Set-MpPreference -DisableRealtimeMonitoring $originalRealtime -ErrorAction Stop
-    Write-Host "[+] Real-time monitoring restored." -ForegroundColor Green
-} catch { Write-Host "[-] Could not restore real-time monitoring" -ForegroundColor Yellow }
-
-try {
-    Set-MpPreference -DisableBehaviorMonitoring $originalBehavior -ErrorAction Stop
-    Write-Host "[+] Behavior monitoring restored." -ForegroundColor Green
-} catch { Write-Host "[-] Could not restore behavior monitoring" -ForegroundColor Yellow }
-
-try {
-    Set-MpPreference -DisableScriptScanning $originalScriptScan -ErrorAction Stop
-    Write-Host "[+] Script scanning restored." -ForegroundColor Green
-} catch { Write-Host "[-] Could not restore script scanning" -ForegroundColor Yellow }
-
-try {
-    Set-MpPreference -DisableIOAVProtection $originalIOAV -ErrorAction Stop
-    Write-Host "[+] IOAV protection restored." -ForegroundColor Green
-} catch { Write-Host "[-] Could not restore IOAV protection" -ForegroundColor Yellow }
-
-try {
-    Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
-    Write-Host "[+] Obfuscated script ASR rule re-enabled." -ForegroundColor Green
-} catch { Write-Host "[-] Could not re-enable ASR rule" -ForegroundColor Yellow }
-
-Write-Host "[*] Windows Defender protections restored to original state." -ForegroundColor Cyan
-# ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
-# ------------------------------------------------------------
-Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
-    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
-    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
-    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
-    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
-    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
-} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
 
 # ============================================================
 # PHASE 2: MEMORY FORENSICS (RAM CLEANUP) – FIXED & RELIABLE
@@ -797,6 +715,91 @@ Write-Host "[*] Deleting temporary USN journal flood files via CMD..." -Foregrou
 # If you only want to delete the specific flood files, use: cmd /c del /f /q "C:\`$JOURNAL_FLUSH_*.tmp"
 cmd /c del /f /q C:\*.tmp 2>nul
 Write-Host "[+] Deleted .tmp files from C:\ (if any existed)." -ForegroundColor Green
+
+# ------------------------------------------------------------
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
+# ------------------------------------------------------------
+Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
+    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
+    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
+    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
+    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
+    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
+} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
+
+# ------------------------------------------------------------
+# RE-ENABLE WINDOWS DEFENDER PROTECTIONS (original step 10)
+# ------------------------------------------------------------
+Write-Host "[*] Re-enabling Windows Defender protections..." -ForegroundColor Cyan
+
+try {
+    Set-MpPreference -DisableRealtimeMonitoring $originalRealtime -ErrorAction Stop
+    Write-Host "[+] Real-time monitoring restored." -ForegroundColor Green
+} catch { Write-Host "[-] Could not restore real-time monitoring" -ForegroundColor Yellow }
+
+try {
+    Set-MpPreference -DisableBehaviorMonitoring $originalBehavior -ErrorAction Stop
+    Write-Host "[+] Behavior monitoring restored." -ForegroundColor Green
+} catch { Write-Host "[-] Could not restore behavior monitoring" -ForegroundColor Yellow }
+
+try {
+    Set-MpPreference -DisableScriptScanning $originalScriptScan -ErrorAction Stop
+    Write-Host "[+] Script scanning restored." -ForegroundColor Green
+} catch { Write-Host "[-] Could not restore script scanning" -ForegroundColor Yellow }
+
+try {
+    Set-MpPreference -DisableIOAVProtection $originalIOAV -ErrorAction Stop
+    Write-Host "[+] IOAV protection restored." -ForegroundColor Green
+} catch { Write-Host "[-] Could not restore IOAV protection" -ForegroundColor Yellow }
+
+try {
+    Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop
+    Write-Host "[+] Obfuscated script ASR rule re-enabled." -ForegroundColor Green
+} catch { Write-Host "[-] Could not re-enable ASR rule" -ForegroundColor Yellow }
+
+Write-Host "[*] Windows Defender protections restored to original state." -ForegroundColor Cyan
+# ------------------------------------------------------------
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
+# ------------------------------------------------------------
+Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
+    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
+    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
+    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
+    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
+    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
+} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
+
+
 
 # ========== FINAL CLEANUP ==========
 Write-Host "[*] Performing final cleanup..." -ForegroundColor Cyan
