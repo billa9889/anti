@@ -585,10 +585,9 @@ if (-not $api) {
     Write-Host "[+] Memory working sets cleared" -ForegroundColor Green
 }
 
-
-# PHASE 3: USN BYPASS – Write to ANY custom folder
-# =================================================
-Write-Host "[PHASE 3] Bypassing USN Journal..." -ForegroundColor Cyan
+# PHASE 3: USN BYPASS – Turbo Mode (Parallel + Empty Files)
+# ===========================================================
+Write-Host "[PHASE 3] Bypassing USN Journal (Turbo)..." -ForegroundColor Cyan
 
 if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
     Write-Host "[!] Requires Administrator privileges." -ForegroundColor Red
@@ -598,23 +597,21 @@ if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 function Bypass-USNJournal {
     param(
         [int]$FloodCount = 150000,
-        [int]$FileSize = 4096,
         [int]$Passes = 3,
         [string[]]$TargetDrives = $null,
         [switch]$DeleteTempFiles = $true,
-        [string]$FilePrefix = "ms_cache",          # Custom prefix
-        [string]$BasePath = "$env:TEMP"            # <--- CHANGE THIS TO ANY FOLDER
+        [string]$FilePrefix = "ms_cache",
+        [string]$BasePath = "$env:TEMP",
+        [int]$Threads = 8          # Number of parallel writers
     )
 
-    Write-Host "[*] Starting USN Journal bypass..." -ForegroundColor Cyan
+    Write-Host "[*] Turbo mode: $Threads parallel threads, zero‑byte files." -ForegroundColor Cyan
     Write-Host "    FloodCount = $FloodCount"
     Write-Host "    BasePath   = $BasePath"
-    Write-Host "    FilePrefix = $FilePrefix"
     Write-Host ""
 
-    # Ensure the target folder exists
+    # Ensure folder exists
     if (-not (Test-Path -Path $BasePath -PathType Container)) {
-        Write-Host "[!] Folder not found: $BasePath. Creating it..." -ForegroundColor Yellow
         New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
     }
 
@@ -639,40 +636,82 @@ function Bypass-USNJournal {
         for ($pass = 0; $pass -lt $Passes; $pass++) {
             Write-Host "    Pass $($pass+1)/$Passes..." -ForegroundColor Cyan
 
-            # Shrink journal to minimum
+            # Shrink journal
             $shrink = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
             if ($shrink.ExitCode -ne 0) {
                 Write-Host "        Shrink failed (exit $($shrink.ExitCode)) – skipping." -ForegroundColor Red
                 continue
             }
 
-            # Flood with files INSIDE THE CUSTOM FOLDER
-            Write-Host "        Creating $FloodCount files in $BasePath..." -NoNewline
+            # --- PARALLEL FILE CREATION ---
+            Write-Host "        Creating $FloodCount empty files with $Threads threads..." -NoNewline
             $created = 0
-            for ($i = 0; $i -lt $FloodCount; $i++) {
-                $guid = [guid]::NewGuid().ToString()
-                # Build the full path inside the custom folder
-                $tempName = Join-Path -Path $BasePath -ChildPath "$FilePrefix`_$guid.tmp"
-                try {
-                    [System.IO.File]::WriteAllBytes($tempName, (New-Object byte[] $FileSize))
-                    $created++
-                } catch {
-                    # Stop if disk full or permission error
-                    break
-                }
-                # Progress indicator every 1000 files
-                if ($i % 1000 -eq 0 -and $i -gt 0) { Write-Host "." -NoNewline }
-            }
-            Write-Host " Done ($created created)." -ForegroundColor Green
+            $lock = [System.Threading.Mutex]::new()
+            $runspacePool = [runspacefactory]::CreateRunspacePool(1, $Threads)
+            $runspacePool.Open()
+            $jobs = @()
 
-            # Shrink again to reset Next USN
+            $total = $FloodCount
+            $batchSize = [math]::Ceiling($total / $Threads)
+
+            for ($t = 0; $t -lt $Threads; $t++) {
+                $start = $t * $batchSize
+                $end = [math]::Min($start + $batchSize, $total)
+                if ($start -ge $end) { break }
+
+                $ps = [powershell]::Create().AddScript({
+                    param($startIdx, $endIdx, $basePath, $prefix, $mutex)
+                    $count = 0
+                    for ($i = $startIdx; $i -lt $endIdx; $i++) {
+                        $guid = [guid]::NewGuid().ToString()
+                        $fname = Join-Path -Path $basePath -ChildPath "$prefix`_$guid.tmp"
+                        try {
+                            # Create zero-byte file (fast)
+                            [System.IO.File]::Create($fname).Close()
+                            $count++
+                        } catch {
+                            # ignore errors
+                        }
+                        # Progress every 100 files
+                        if ($i % 100 -eq 0) {
+                            $mutex.WaitOne() | Out-Null
+                            $global:created += 100   # approximate
+                            $mutex.ReleaseMutex()
+                        }
+                    }
+                    return $count
+                })
+                $ps.AddParameters(@{
+                    startIdx = $start
+                    endIdx = $end
+                    basePath = $BasePath
+                    prefix = $FilePrefix
+                    mutex = $lock
+                }) | Out-Null
+                $jobs += $ps
+                $ps.BeginInvoke() | Out-Null
+            }
+
+            # Wait for all to finish and collect results
+            $totalCreated = 0
+            foreach ($job in $jobs) {
+                $result = $job.EndInvoke($job.BeginInvoke($null, $null))
+                $totalCreated += $result
+                $job.Dispose()
+            }
+            $runspacePool.Close()
+            $runspacePool.Dispose()
+
+            Write-Host " Done ($totalCreated created)." -ForegroundColor Green
+
+            # Shrink again
             Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -NoNewWindow -ErrorAction SilentlyContinue
             $anySuccess = $true
         }
 
-        # --- Cleanup: Delete ONLY the files we created inside the custom folder ---
+        # --- Cleanup (parallel deletion can also be used, but it's fast enough) ---
         if ($DeleteTempFiles) {
-            Write-Host "    Cleaning up temp files in $BasePath..." -NoNewline
+            Write-Host "    Cleaning up temp files..." -NoNewline
             $pattern = Join-Path -Path $BasePath -ChildPath "$FilePrefix`_*.tmp"
             $files = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
             if ($files) {
@@ -691,31 +730,15 @@ function Bypass-USNJournal {
     }
 
     if ($anySuccess) {
-        Write-Host "[✓] USN Journal bypass completed!" -ForegroundColor Green
-        Write-Host "[*] Old USN records overwritten." -ForegroundColor Green
-        if ($DeleteTempFiles) { Write-Host "[*] Temp files deleted." -ForegroundColor Green }
-        else { Write-Host "[*] Temp files remain in: $BasePath" -ForegroundColor Yellow }
+        Write-Host "[✓] USN Journal bypass completed (turbo)!" -ForegroundColor Green
     } else {
         Write-Host "[✗] USN Journal bypass failed." -ForegroundColor Red
     }
 }
 
-# ==========================================================
-# 🎯 CUSTOMIZE YOUR SETTINGS BELOW
-# ==========================================================
+# ===== RUN WITH TURBO SETTINGS =====
+Bypass-USNJournal -FloodCount 150000 -Passes 3 -TargetDrives @("C") -BasePath "$env:TEMP" -FilePrefix "ms_cache" -Threads 8 -DeleteTempFiles
 
-# Example 1: Write to User's Temp folder (Stealthiest)
-Bypass-USNJournal -FloodCount 150000 -Passes 3 -TargetDrives @("C") -BasePath "$env:TEMP" -FilePrefix "ms_cache"
-
-# Example 2: Write to Windows Update cache (if you really want)
-# Bypass-USNJournal -FloodCount 150000 -Passes 3 -TargetDrives @("C") -BasePath "C:\Windows\SoftwareDistribution\Download" -FilePrefix "wu_pkg"
-
-# ========== CLEAN UP USN FLOOD FILES (Using CMD DEL) ==========
-Write-Host "[*] Deleting temporary USN journal flood files via CMD..." -ForegroundColor Cyan
-# This command deletes ALL .tmp files in C:\, including the flood files.
-# If you only want to delete the specific flood files, use: cmd /c del /f /q "C:\`$JOURNAL_FLUSH_*.tmp"
-cmd /c del /f /q C:\*.tmp 2>nul
-Write-Host "[+] Deleted .tmp files from C:\ (if any existed)." -ForegroundColor Green
 
 # ------------------------------------------------------------
 # REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
