@@ -265,20 +265,32 @@ Write-Host "[+] DLL files and folders cleaned." -ForegroundColor Green
 # ------------------------------------------------------------
 # CLEAR USN JOURNAL ON C: DRIVE
 # ------------------------------------------------------------
-Write-Host "[*] Clearing USN Journal on C: drive..." -ForegroundColor Cyan
+if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "[-] This script must be run as Administrator." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "[*] Attempting to clear USN Journal on C: drive..." -ForegroundColor Cyan
+
 try {
-    # First, get the current journal ID if any
-    $journalId = (fsutil usn queryjournal C: 2>$null) -match "Usn Journal ID\s*:\s*([0-9a-fA-F-]+)" | ForEach-Object { $Matches[1] }
-    if ($journalId) {
-        # Delete the journal
-        $null = fsutil usn deletejournal /D C: 2>&1
-        Write-Host "[+] USN Journal cleared." -ForegroundColor Green
+    # Try to delete the journal; capture output and exit code
+    $output = fsutil usn deletejournal /D C: 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[+] USN Journal cleared successfully." -ForegroundColor Green
     } else {
-        Write-Host "[!] No USN Journal found on C: drive (or not accessible)." -ForegroundColor Yellow
+        # If it fails, check if it's because there is no journal
+        if ($output -match "no USN journal") {
+            Write-Host "[!] No USN Journal exists on C: drive." -ForegroundColor Yellow
+        } else {
+            Write-Host "[-] Failed to clear USN Journal. Error: $output" -ForegroundColor Red
+        }
     }
 } catch {
-    Write-Host "[-] Failed to clear USN Journal: $_" -ForegroundColor Yellow
+    Write-Host "[-] Exception occurred: $_" -ForegroundColor Red
 }
+
+Write-Host "[*] Test finished. Press any key to exit..."
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 # ------------------------------------------------------------
 # REMOVE WINDOWS DEFENDER EXCLUSIONS
