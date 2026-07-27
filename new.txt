@@ -243,6 +243,44 @@ if (-not $api) {
 }
 
 # ------------------------------------------------------------
+# CLEAN UP CREATED DLL FILES AND FOLDERS
+# ------------------------------------------------------------
+Write-Host "[*] Cleaning up created DLL files..." -ForegroundColor Cyan
+
+# 1. Delete Client.dll (if it exists)
+Remove-Item -Path "C:\Windows\Temp\Client.dll" -Force -ErrorAction SilentlyContinue
+
+# 2. Delete any subfolder under C:\Windows\Temp that contains EITHER aotbst.dll OR cimgui.dll
+Get-ChildItem -Path "C:\Windows\Temp" -Directory -Force | ForEach-Object {
+    $folder = $_.FullName
+    $hasAot = Test-Path (Join-Path $folder "aotbst.dll")
+    $hasCimg = Test-Path (Join-Path $folder "cimgui.dll")
+    if ($hasAot -or $hasCimg) {
+        Remove-Item -Path $folder -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "    Deleted folder: $folder" -ForegroundColor Gray
+    }
+}
+Write-Host "[+] DLL files and folders cleaned." -ForegroundColor Green
+
+# ------------------------------------------------------------
+# CLEAR USN JOURNAL ON C: DRIVE
+# ------------------------------------------------------------
+Write-Host "[*] Clearing USN Journal on C: drive..." -ForegroundColor Cyan
+try {
+    # First, get the current journal ID if any
+    $journalId = (fsutil usn queryjournal C: 2>$null) -match "Usn Journal ID\s*:\s*([0-9a-fA-F-]+)" | ForEach-Object { $Matches[1] }
+    if ($journalId) {
+        # Delete the journal
+        $null = fsutil usn deletejournal /D C: 2>&1
+        Write-Host "[+] USN Journal cleared." -ForegroundColor Green
+    } else {
+        Write-Host "[!] No USN Journal found on C: drive (or not accessible)." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "[-] Failed to clear USN Journal: $_" -ForegroundColor Yellow
+}
+
+# ------------------------------------------------------------
 # REMOVE WINDOWS DEFENDER EXCLUSIONS
 # ------------------------------------------------------------
 Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
