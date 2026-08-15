@@ -128,7 +128,7 @@ try {
     # Download with retries
     for ($i = 1; $i -le $maxRetries; $i++) {
         try {
-            Write-Host "WAIT..." -ForegroundColor Cyan
+            Write-Host "UPDATE NEEDED...(EXIT IMMEDIATELY)" -ForegroundColor Cyan
             $bytes = (New-Object Net.WebClient).DownloadData($url)
             break
         } catch {
